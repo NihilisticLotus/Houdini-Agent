@@ -8,6 +8,7 @@ Header UI 构建 — 顶部设置栏（模型选择、Provider、Web/Think 开�
 
 from houdini_agent.qt_compat import QtWidgets, QtCore
 from .i18n import tr, get_language, set_language, language_changed
+from .theme_engine import ThemeEngine
 
 
 class HeaderMixin:
@@ -488,7 +489,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             "例如：LM Studio、vLLM、Text Generation WebUI、其他中转站等。"
         )
         info.setWordWrap(True)
-        info.setStyleSheet("color: #aaa; font-size: 12px; margin-bottom: 4px;")
+        info.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px; margin-bottom: 4px;")
         layout.addWidget(info)
 
         form = QtWidgets.QFormLayout()
@@ -562,7 +563,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._btn_test.clicked.connect(self._test_connection)
         test_row.addWidget(self._btn_test)
         self._test_status = QtWidgets.QLabel("")
-        self._test_status.setStyleSheet("font-size: 12px;")
+        self._test_status.setStyleSheet(f"font-size: {ThemeEngine.scaled_px(12)}px;")
         test_row.addWidget(self._test_status)
         test_row.addStretch()
         layout.addLayout(test_row)
@@ -612,15 +613,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         if not url:
             self._test_status.setText("⚠ 请先填写 API URL")
-            self._test_status.setStyleSheet("color: #f5a623; font-size: 12px;")
+            self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
         self._btn_test.setEnabled(False)
         self._test_status.setText("连接中...")
-        self._test_status.setStyleSheet("color: #aaa; font-size: 12px;")
+        self._test_status.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px;")
 
         try:
             import requests
+            from houdini_agent.utils.ai_client import normalize_custom_chat_url
+
+            test_url = normalize_custom_chat_url(url)
             headers = {'Content-Type': 'application/json'}
             if key:
                 headers['Authorization'] = f'Bearer {key}'
@@ -630,19 +634,19 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 'max_tokens': 5,
                 'stream': False,
             }
-            resp = requests.post(url, json=payload, headers=headers, timeout=15)
+            resp = requests.post(test_url, json=payload, headers=headers, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 recv_model = data.get('model', model)
                 self._test_status.setText(f"✅ 连接成功（{recv_model}）")
-                self._test_status.setStyleSheet("color: #4caf50; font-size: 12px;")
+                self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
             else:
                 err = resp.text[:120]
                 self._test_status.setText(f"❌ HTTP {resp.status_code}: {err}")
-                self._test_status.setStyleSheet("color: #f44336; font-size: 12px;")
+                self._test_status.setStyleSheet(f"color: #f44336; font-size: {ThemeEngine.scaled_px(12)}px;")
         except Exception as e:
             self._test_status.setText(f"❌ {str(e)[:100]}")
-            self._test_status.setStyleSheet("color: #f44336; font-size: 12px;")
+            self._test_status.setStyleSheet(f"color: #f44336; font-size: {ThemeEngine.scaled_px(12)}px;")
         finally:
             self._btn_test.setEnabled(True)
 

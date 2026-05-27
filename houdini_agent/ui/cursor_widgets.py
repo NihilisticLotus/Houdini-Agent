@@ -14,6 +14,7 @@ import re
 import time
 
 from .i18n import tr
+from .theme_engine import ThemeEngine
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -344,8 +345,7 @@ class ThinkingSection(CollapsibleSection):
         self._round_count = 0
         
         # ★ 思考内容 — QPlainTextEdit(readOnly)，自带滚动条
-        self._text_font = QtGui.QFont(CursorTheme.FONT_BODY)
-        self._text_font.setPixelSize(13)
+        self._text_font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         
         self.thinking_label = QtWidgets.QPlainTextEdit()
         self.thinking_label.setReadOnly(True)
@@ -491,7 +491,7 @@ class ThinkingBar(QtWidgets.QWidget):
         time_str = f"{s}s" if s < 60 else f"{s // 60}m{s % 60:02d}s"
         display = f"  ✦ {tr('thinking.progress', time_str)}"
 
-        font = QtGui.QFont(CursorTheme.FONT_BODY, 9)
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 12)
         p.setFont(font)
         fm = QtGui.QFontMetrics(font)
         y = (self.height() + fm.ascent() - fm.descent()) // 2
@@ -1087,7 +1087,7 @@ class AIResponse(QtWidgets.QWidget):
         # ★ 显式设置字体，确保流式和渲染后使用同一字体族和大小
         _stream_font = QtGui.QFont()
         _stream_font.setFamilies(['Microsoft YaHei', 'SimSun', 'Segoe UI'])
-        _stream_font.setPixelSize(14)  # 与 {FS_MD}=14 一致
+        _stream_font.setPixelSize(ThemeEngine.scaled_px(14))  # 与 {FS_MD}=14 一致
         self.content_label.setFont(_stream_font)
         self.content_label.document().setDefaultFont(_stream_font)
         # ★ 设置行间距为 1.6 倍，与 HTML 中的 line-height:1.6 保持一致
@@ -1789,7 +1789,7 @@ class ParamDiffWidget(QtWidgets.QWidget):
     
     # 行级通用样式（紧凑无间隙，像一个完整代码块）
     _LINE_BASE = (
-        "font-size: 11px; font-family: {font}; "
+        "font-size: {font_size}px; font-family: {font}; "
         "margin: 0px; padding: 0px 6px; "
         "border: none; border-radius: 0px; "
         "min-height: 16px; max-height: 16px;"
@@ -2285,7 +2285,7 @@ class PlanDAGWidget(QtWidgets.QWidget):
             p.setPen(pen)
             p.drawRoundedRect(grect, 10, 10)
             # 标题
-            title_font = QtGui.QFont(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 8)
+            title_font = ThemeEngine.font(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 11)
             title_font.setWeight(QtGui.QFont.Medium)
             p.setFont(title_font)
             p.setPen(QtGui.QColor(r, g, b, 140))
@@ -2352,7 +2352,7 @@ class PlanDAGWidget(QtWidgets.QWidget):
             # 连线标签（如果有）
             conn_label = conn.get("label", "")
             if conn_label:
-                lbl_font = QtGui.QFont(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 7)
+                lbl_font = ThemeEngine.font(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 9)
                 p.setFont(lbl_font)
                 lbl_color = QtGui.QColor(border_c_hex)
                 lbl_color.setAlpha(100)
@@ -2362,8 +2362,8 @@ class PlanDAGWidget(QtWidgets.QWidget):
                 p.drawText(QtCore.QPointF(mid_x + 4, mid_y_lbl), conn_label)
 
         # ── 3) 节点 ──
-        label_font = QtGui.QFont(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 9)
-        type_font = QtGui.QFont(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 7)
+        label_font = ThemeEngine.font(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 12)
+        type_font = ThemeEngine.font(CursorTheme.FONT_BODY.split(",")[0].strip("' "), 9)
 
         for n in self._nodes:
             nid = n["id"]
@@ -2941,7 +2941,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         self._status_badge.setStyleSheet(
             f"color: {color}; background: rgba(0,0,0,0.3); "
             f"border: 1px solid {color}; border-radius: 4px; "
-            f"font-size: 10px; padding: 1px 8px; font-weight: bold;"
+            f"font-size: {ThemeEngine.scaled_px(10)}px; padding: 1px 8px; font-weight: bold;"
         )
         if self._btn_row:
             show = status == "draft" and not self._confirmed and not self._rejected
@@ -3406,7 +3406,7 @@ class PlanViewer(QtWidgets.QWidget):
         self._status_badge.setStyleSheet(
             f"color: {color}; background: rgba(0,0,0,0.3); "
             f"border: 1px solid {color}; border-radius: 4px; "
-            f"font-size: 10px; padding: 1px 8px; font-weight: bold;"
+            f"font-size: {ThemeEngine.scaled_px(10)}px; padding: 1px 8px; font-weight: bold;"
         )
         # 按钮可见性
         show_buttons = status in ("draft", "confirmed") and not self._confirmed and not self._rejected
@@ -4525,7 +4525,7 @@ class _CollapsibleShellOutput(QtWidgets.QWidget):
         self._text.setProperty("variant", self._variant)
         self._text.setHtml(
             f'<pre style="margin:0;white-space:pre;font-family:Consolas,Monaco,monospace;'
-            f'font-size:12px;">{content_html}</pre>'
+            f'font-size:{ThemeEngine.scaled_px(12)}px;">{content_html}</pre>'
         )
         lay.addWidget(self._text)
 
@@ -5274,7 +5274,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
         text = f"Thinking {self._elapsed:.1f}s" if self._elapsed > 0 else "Thinking..."
-        font = QtGui.QFont(CursorTheme.FONT_BODY, 10)
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text)
@@ -5305,7 +5305,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
         text = "Generating..."
-        font = QtGui.QFont(CursorTheme.FONT_BODY, 10)
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text)
@@ -5337,7 +5337,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         w, h = self.width(), self.height()
         progress = getattr(self, '_planning_progress', '')
         text = f"Planning... {progress}" if progress else "Planning..."
-        font = QtGui.QFont(CursorTheme.FONT_BODY, 10)
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text)
@@ -5369,7 +5369,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         w, h = self.width(), self.height()
         tool_name = getattr(self, '_tool_name', '')
         text = f"Exec: {tool_name}" if tool_name else "Executing..."
-        font = QtGui.QFont(CursorTheme.FONT_BODY, 10)
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text)
@@ -6654,7 +6654,7 @@ class TokenAnalyticsPanel(QtWidgets.QDialog):
         row_h.setContentsMargins(4, 3, 4, 3)
         row_h.setSpacing(2)
 
-        font_size = "10px" if is_header else "11px"
+        font_size = f"{ThemeEngine.scaled_px(10 if is_header else 11)}px"
         fg = CursorTheme.TEXT_MUTED if is_header else CursorTheme.TEXT_PRIMARY
         weight = "bold" if is_header else "normal"
         font_family = f"font-family:'Consolas','Monaco',monospace;" if not is_header else ""
@@ -6979,7 +6979,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
         skill_dir_lay.setContentsMargins(10, 6, 10, 6)
         skill_dir_lay.setSpacing(8)
         skill_dir_icon = QtWidgets.QLabel("📁")
-        skill_dir_icon.setStyleSheet("background: transparent; font-size: 13px;")
+        skill_dir_icon.setStyleSheet(f"background: transparent; font-size: {ThemeEngine.scaled_px(13)}px;")
         skill_dir_lay.addWidget(skill_dir_icon)
         skill_dir_lbl = QtWidgets.QLabel(tr('plugin.skill_dir_label'))
         skill_dir_lbl.setObjectName("pmSubLabel")
@@ -7069,7 +7069,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
             ev.setAlignment(QtCore.Qt.AlignCenter)
 
             icon_lbl = QtWidgets.QLabel("🔌")
-            icon_lbl.setStyleSheet("font-size: 28px; background: transparent;")
+            icon_lbl.setStyleSheet(f"font-size: {ThemeEngine.scaled_px(28)}px; background: transparent;")
             icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
             ev.addWidget(icon_lbl)
 
@@ -7108,7 +7108,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
         dot.setFixedWidth(12)
         dot.setStyleSheet(
             f"color: {'#6ecf72' if enabled else '#5a5040'}; "
-            f"font-size: 8px; background: transparent;"
+            f"font-size: {ThemeEngine.scaled_px(8)}px; background: transparent;"
         )
         dot.setAlignment(QtCore.Qt.AlignCenter)
         h.addWidget(dot)
@@ -7123,7 +7123,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
 
         name_lbl = QtWidgets.QLabel(
             f"<span style='font-weight:600; color:#e0d4c0'>{name}</span>"
-            f"  <span style='color:#7a6e5e; font-size:10px'>v{version}</span>"
+            f"  <span style='color:#7a6e5e; font-size:{ThemeEngine.scaled_px(10)}px'>v{version}</span>"
         )
         name_lbl.setObjectName("pmCardName")
         left.addWidget(name_lbl)
@@ -7419,7 +7419,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
             ev.setAlignment(QtCore.Qt.AlignCenter)
 
             icon_lbl = QtWidgets.QLabel("🧠")
-            icon_lbl.setStyleSheet("font-size: 28px; background: transparent;")
+            icon_lbl.setStyleSheet(f"font-size: {ThemeEngine.scaled_px(28)}px; background: transparent;")
             icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
             ev.addWidget(icon_lbl)
 
@@ -7457,7 +7457,7 @@ class PluginManagerDialog(QtWidgets.QDialog):
         # 图标
         icon_lbl = QtWidgets.QLabel("🧠")
         icon_lbl.setFixedWidth(20)
-        icon_lbl.setStyleSheet("font-size: 14px; background: transparent;")
+        icon_lbl.setStyleSheet(f"font-size: {ThemeEngine.scaled_px(14)}px; background: transparent;")
         icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
         h.addWidget(icon_lbl)
 
@@ -7776,7 +7776,7 @@ class RulesEditorDialog(QtWidgets.QDialog):
 
         empty_icon = QtWidgets.QLabel("📝")
         empty_icon.setAlignment(QtCore.Qt.AlignCenter)
-        empty_icon.setStyleSheet("font-size: 32px; background: transparent;")
+        empty_icon.setStyleSheet(f"font-size: {ThemeEngine.scaled_px(32)}px; background: transparent;")
         empty_lay.addWidget(empty_icon)
 
         self._empty_label = QtWidgets.QLabel(tr('rules.empty_hint'))

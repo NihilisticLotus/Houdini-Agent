@@ -16,7 +16,7 @@
      ACCENT_YELLOW #fbbf24
    
    Font Size Placeholders (replaced by ThemeEngine):
-     {FS_MICRO}=10  {FS_XS}=11  {FS_SM}=12  {FS_BODY}=13
+     {FS_MICRO}=10  {FS_XS}=11  {FS_SM}=12  {FS_BASE}=13  {FS_BODY}=13
      {FS_MD}=14     {FS_LG}=16  {FS_XL}=17
    ============================================================ */
 

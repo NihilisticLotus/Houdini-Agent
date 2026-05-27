@@ -8,7 +8,7 @@ Theme Engine — 管理 QSS 模板渲染与字号缩放
 """
 
 from pathlib import Path
-from houdini_agent.qt_compat import QtCore
+from houdini_agent.qt_compat import QtCore, QtWidgets, QtGui
 
 
 class ThemeEngine:
@@ -19,11 +19,17 @@ class ThemeEngine:
         "FS_MICRO": 10,
         "FS_XS": 11,
         "FS_SM": 12,
+        "FS_BASE": 13,
         "FS_BODY": 13,
         "FS_MD": 14,
         "FS_LG": 16,
         "FS_XL": 17,
     }
+
+    SYSTEM_SCALE_MIN = 0.8
+    SYSTEM_SCALE_MAX = 2.0
+    SYSTEM_BASE_POINT_SIZE = 9.0
+    SYSTEM_BASE_PIXEL_SIZE = 12.0
 
     SCALE_MIN = 0.7
     SCALE_MAX = 1.5
@@ -49,6 +55,53 @@ class ThemeEngine:
     def scale(self) -> float:
         return self._scale
 
+    @classmethod
+    def system_font_scale(cls) -> float:
+        """Return the current OS/Houdini application font scale."""
+        try:
+            app = QtWidgets.QApplication.instance()
+            font = app.font() if app is not None else QtGui.QGuiApplication.font()
+            point_size = float(font.pointSizeF())
+            if point_size > 0:
+                scale = point_size / cls.SYSTEM_BASE_POINT_SIZE
+            else:
+                pixel_size = float(font.pixelSize())
+                scale = pixel_size / cls.SYSTEM_BASE_PIXEL_SIZE if pixel_size > 0 else 1.0
+        except Exception:
+            scale = 1.0
+        return max(cls.SYSTEM_SCALE_MIN, min(cls.SYSTEM_SCALE_MAX, scale))
+
+    @property
+    def effective_scale(self) -> float:
+        return self._scale * self.system_font_scale()
+
+    @classmethod
+    def saved_user_scale(cls) -> float:
+        try:
+            settings = QtCore.QSettings("HoudiniAI", "Assistant")
+            return float(settings.value("font_scale", 1.0))
+        except Exception:
+            return 1.0
+
+    @classmethod
+    def scaled_px(cls, base_px: float, user_scale: float = None) -> int:
+        if user_scale is None:
+            user_scale = cls.saved_user_scale()
+        return max(1, int(round(float(base_px) * float(user_scale) * cls.system_font_scale())))
+
+    @classmethod
+    def font(cls, family: str = "", base_px: float = None, user_scale: float = None) -> QtGui.QFont:
+        font = QtGui.QFont()
+        if family:
+            families = [part.strip().strip("'\"") for part in family.split(",") if part.strip()]
+            if hasattr(font, "setFamilies") and families:
+                font.setFamilies(families)
+            elif families:
+                font.setFamily(families[0])
+        if base_px is not None:
+            font.setPixelSize(cls.scaled_px(base_px, user_scale=user_scale))
+        return font
+
     def set_scale(self, scale: float):
         """设置缩放比例（自动 clamp 到 [0.7, 1.5]）"""
         self._scale = max(self.SCALE_MIN, min(self.SCALE_MAX, round(scale, 2)))
@@ -66,6 +119,10 @@ class ThemeEngine:
     def scale_percent(self) -> int:
         return int(round(self._scale * 100))
 
+    @property
+    def system_scale_percent(self) -> int:
+        return int(round(self.system_font_scale() * 100))
+
     # ---- 渲染 ----
 
     def render(self) -> str:
@@ -74,7 +131,7 @@ class ThemeEngine:
             return ""
         qss = self._template
         for name, base in self.BASE_SIZES.items():
-            qss = qss.replace("{" + name + "}", str(round(base * self._scale)))
+            qss = qss.replace("{" + name + "}", str(round(base * self.effective_scale)))
         return qss
 
     # ---- 持久化 ----

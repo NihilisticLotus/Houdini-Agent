@@ -11,7 +11,7 @@ import ssl
 import time
 import re
 from typing import List, Dict, Optional, Any, Callable, Generator, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 from shared.common_utils import load_config, save_config
 
@@ -30,6 +30,23 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     pass
+
+
+def normalize_custom_chat_url(api_url: str) -> str:
+    """Accept either an OpenAI-compatible base URL or a full chat endpoint."""
+    raw = (api_url or '').strip()
+    if not raw:
+        return ''
+
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return raw.rstrip('/')
+
+    path = parts.path.rstrip('/')
+    if not path.lower().endswith('/chat/completions'):
+        path = f"{path}/chat/completions" if path else '/chat/completions'
+
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 # ============================================================
@@ -2381,7 +2398,7 @@ class AIClient:
         elif provider == 'openrouter':
             return self.OPENROUTER_API_URL
         elif provider == 'custom':
-            return self._CUSTOM_API_URL or self.OPENAI_API_URL
+            return normalize_custom_chat_url(self._CUSTOM_API_URL) or self.OPENAI_API_URL
         return self.OPENAI_API_URL
 
     def _get_vendor_name(self, provider: str) -> str:
@@ -2401,7 +2418,7 @@ class AIClient:
             api_key: API Key（可为空）
             supports_fc: 是否支持原生 Function Calling
         """
-        self._CUSTOM_API_URL = api_url.strip()
+        self._CUSTOM_API_URL = normalize_custom_chat_url(api_url)
         self._CUSTOM_SUPPORTS_FC = supports_fc
         if api_key:
             self._api_keys['custom'] = api_key.strip()

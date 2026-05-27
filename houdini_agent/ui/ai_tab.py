@@ -6839,7 +6839,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             )
             self._batch_placeholder.setObjectName("batchPlaceholder")
             self._batch_placeholder.setStyleSheet(
-                "color: #64748b; padding: 8px 12px; font-size: 12px; "
+                f"color: #64748b; padding: 8px 12px; font-size: {ThemeEngine.scaled_px(12)}px; "
                 "font-style: italic; background: transparent;"
             )
             self._batch_placeholder.setAlignment(QtCore.Qt.AlignCenter)
