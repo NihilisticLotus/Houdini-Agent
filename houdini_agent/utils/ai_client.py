@@ -49,6 +49,26 @@ def normalize_custom_chat_url(api_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def normalize_custom_models_url(api_url: str) -> str:
+    """Return the OpenAI-compatible models endpoint for a custom provider URL."""
+    chat_url = normalize_custom_chat_url(api_url)
+    if not chat_url:
+        return ''
+
+    parts = urlsplit(chat_url)
+    if not parts.scheme or not parts.netloc:
+        raw = chat_url.rstrip('/')
+        if raw.lower().endswith('/chat/completions'):
+            raw = raw[:-len('/chat/completions')]
+        return f"{raw}/models" if raw else 'models'
+
+    path = parts.path.rstrip('/')
+    if path.lower().endswith('/chat/completions'):
+        path = path[:-len('/chat/completions')]
+    path = f"{path}/models" if path else '/models'
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 # ============================================================
 # 联网搜索功能
 # ============================================================
@@ -2383,21 +2403,6 @@ class AIClient:
         """判断是否应使用 Anthropic Messages 协议（而非 OpenAI 协议）"""
         return provider == 'duojie' and model.lower() in self._DUOJIE_ANTHROPIC_MODELS
 
-    def _normalize_chat_url(self, url: str) -> str:
-        """将基础 URL 规范化为 chat completions 端点
-        
-        支持的输入格式：
-          - https://integrate.api.nvidia.com/v1          -> 追加 /chat/completions
-          - https://example.com/v1/chat/completions      -> 保持不变
-          - http://localhost:1234/v1                      -> 追加 /chat/completions
-        """
-        url = url.rstrip('/')
-        if url.endswith('/chat/completions'):
-            return url
-        if url.endswith('/v1'):
-            return url + '/chat/completions'
-        return url
-
     def _get_api_url(self, provider: str, model: str = '') -> str:
         provider = (provider or 'openai').lower()
         if provider == 'deepseek':
@@ -2414,7 +2419,7 @@ class AIClient:
             return self.OPENROUTER_API_URL
         elif provider == 'custom':
             raw = self._CUSTOM_API_URL or self.OPENAI_API_URL
-            return self._normalize_chat_url(raw)
+            return normalize_custom_chat_url(raw)
         return self.OPENAI_API_URL
 
     def _get_vendor_name(self, provider: str) -> str:
@@ -2476,10 +2481,9 @@ class AIClient:
         if not HAS_REQUESTS:
             return []
         
-        base = api_url.rstrip('/')
-        if base.endswith('/chat/completions'):
-            base = base[:-len('/chat/completions')]
-        models_url = base + '/models'
+        models_url = normalize_custom_models_url(api_url)
+        if not models_url:
+            return []
         
         headers = {'Content-Type': 'application/json'}
         if api_key:

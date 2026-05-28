@@ -7,6 +7,7 @@ Header UI 构建 — 顶部设置栏（模型选择、Provider、Web/Think 开�
 """
 
 from houdini_agent.qt_compat import QtWidgets, QtCore
+from houdini_agent.utils.ai_client import normalize_custom_chat_url, normalize_custom_models_url
 from .i18n import tr, get_language, set_language, language_changed
 from .theme_engine import ThemeEngine
 
@@ -642,15 +643,6 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             QPushButton:hover { background: #444; border-color: #6a9eff; }
         """)
 
-    def _normalize_chat_url(self, url: str) -> str:
-        """将基础 URL 规范化为 chat completions 端点"""
-        url = url.rstrip('/')
-        if url.endswith('/chat/completions'):
-            return url
-        if url.endswith('/v1'):
-            return url + '/chat/completions'
-        return url
-
     def _fetch_models(self):
         """从 API 获取可用模型列表并填充到下拉框"""
         url = self._url_edit.text().strip()
@@ -667,10 +659,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         try:
             import requests
-            base = url.rstrip('/')
-            if base.endswith('/chat/completions'):
-                base = base[:-len('/chat/completions')]
-            models_url = base + '/models'
+            models_url = normalize_custom_models_url(url)
 
             headers = {'Content-Type': 'application/json'}
             if key:
@@ -716,7 +705,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
-        chat_url = self._normalize_chat_url(url)
+        test_url = normalize_custom_chat_url(url)
 
         self._btn_test.setEnabled(False)
         self._test_status.setText("连接中...")
@@ -724,9 +713,6 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         try:
             import requests
-            from houdini_agent.utils.ai_client import normalize_custom_chat_url
-
-            test_url = normalize_custom_chat_url(url)
             headers = {'Content-Type': 'application/json'}
             if key:
                 headers['Authorization'] = f'Bearer {key}'
@@ -736,7 +722,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 'max_tokens': 5,
                 'stream': False,
             }
-            resp = requests.post(chat_url, json=payload, headers=headers, timeout=15)
+            resp = requests.post(test_url, json=payload, headers=headers, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 recv_model = data.get('model', model)
