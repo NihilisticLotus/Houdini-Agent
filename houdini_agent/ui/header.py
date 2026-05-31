@@ -384,7 +384,8 @@ class HeaderMixin:
                 self._custom_provider_config['api_key'] = cfg.get('custom_api_key', '')
                 models_str = cfg.get('custom_models', '')
                 if models_str:
-                    self._custom_provider_config['models'] = [m.strip() for m in models_str.split(',') if m.strip()]
+                    model_chunks = models_str.replace('\n', ',').replace(';', ',').split(',')
+                    self._custom_provider_config['models'] = [m.strip() for m in model_chunks if m.strip()]
                 try:
                     self._custom_provider_config['context_limit'] = int(cfg.get('custom_context_limit', '128000'))
                 except (ValueError, TypeError):
@@ -465,7 +466,10 @@ class HeaderMixin:
             self._save_custom_provider_config()
             # 刷新 UI
             if self._current_provider() == 'custom':
+                current_model = self.model_combo.currentText()
                 self._refresh_models('custom')
+                if current_model in new_cfg['models']:
+                    self.model_combo.setCurrentText(current_model)
                 self._update_key_status()
 
 
@@ -525,23 +529,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         key_row.addWidget(self._btn_show_key)
         form.addRow("API Key:", key_row)
 
-        # 模型名 — 可编辑 ComboBox + 获取模型按钮
-        self._models_combo = QtWidgets.QComboBox()
-        self._models_combo.setEditable(True)
-        self._models_combo.setMinimumHeight(28)
-        self._models_combo.setMaxVisibleItems(20)
-        self._models_combo.setSizePolicy(
+        # 模型名列表：一行一个；粘贴逗号或分号分隔的列表也可以。
+        self._models_edit = QtWidgets.QPlainTextEdit()
+        self._models_edit.setMinimumHeight(96)
+        self._models_edit.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
-        self._models_combo.lineEdit().setPlaceholderText("model-name（可手动输入或点击右侧按钮获取）")
-        for m in cfg.get('models', []):
-            self._models_combo.addItem(m)
-        if cfg.get('models'):
-            self._models_combo.setCurrentText(cfg['models'][0])
+        self._models_edit.setPlaceholderText("glm-4.5\nglm-4.7\nglm-5.1")
+        self._models_edit.setPlainText('\n'.join(cfg.get('models', [])))
 
         models_row = QtWidgets.QHBoxLayout()
         models_row.setSpacing(4)
-        models_row.addWidget(self._models_combo)
+        models_row.addWidget(self._models_edit, 1)
 
         self._btn_fetch_models = QtWidgets.QPushButton("⟳")
         self._btn_fetch_models.setFixedSize(28, 28)
@@ -603,14 +602,14 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 color: #ddd;
             }
             QLabel { color: #ccc; }
-            QLineEdit, QSpinBox, QComboBox {
+            QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
                 background: #2a2a2a;
                 color: #eee;
                 border: 1px solid #444;
                 border-radius: 4px;
                 padding: 4px 8px;
             }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus {
                 border-color: #6a9eff;
             }
             QComboBox::drop-down {
@@ -643,19 +642,42 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             QPushButton:hover { background: #444; border-color: #6a9eff; }
         """)
 
+    def _model_names(self) -> list:
+        """Return model names from the multiline model editor."""
+        text = self._models_edit.toPlainText()
+        names = []
+        seen = set()
+        for raw in text.replace(';', ',').replace('\n', ',').split(','):
+            name = raw.strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    def _set_model_names(self, models: list):
+        """Replace the multiline model editor content with one model per line."""
+        unique = []
+        seen = set()
+        for model in models:
+            name = str(model).strip()
+            if name and name not in seen:
+                unique.append(name)
+                seen.add(name)
+        self._models_edit.setPlainText('\n'.join(unique))
+
     def _fetch_models(self):
-        """从 API 获取可用模型列表并填充到下拉框"""
+        """从 API 获取可用模型列表并填充到模型列表"""
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
 
         if not url:
             self._test_status.setText("⚠ 请先填写 API URL")
-            self._test_status.setStyleSheet("color: #f5a623; font-size: 12px;")
+            self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
         self._btn_fetch_models.setEnabled(False)
         self._test_status.setText("获取模型列表中...")
-        self._test_status.setStyleSheet("color: #aaa; font-size: 12px;")
+        self._test_status.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px;")
 
         try:
             import requests
@@ -670,27 +692,19 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 data = resp.json()
                 model_ids = [m.get('id', '') for m in data.get('data', []) if m.get('id')]
                 if model_ids:
-                    current_text = self._models_combo.currentText()
-                    self._models_combo.clear()
-                    for mid in sorted(model_ids):
-                        self._models_combo.addItem(mid)
-                    if current_text and current_text in model_ids:
-                        self._models_combo.setCurrentText(current_text)
-                    else:
-                        self._models_combo.setCurrentIndex(0)
+                    self._set_model_names(sorted(model_ids))
                     self._test_status.setText(f"✅ 发现 {len(model_ids)} 个模型")
-                    self._test_status.setStyleSheet("color: #4caf50; font-size: 12px;")
-                    self._models_combo.showPopup()
+                    self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
                 else:
                     self._test_status.setText("⚠ 未发现可用模型")
-                    self._test_status.setStyleSheet("color: #f5a623; font-size: 12px;")
+                    self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             else:
                 err = resp.text[:120]
                 self._test_status.setText(f"❌ HTTP {resp.status_code}: {err}")
-                self._test_status.setStyleSheet("color: #f44336; font-size: 12px;")
+                self._test_status.setStyleSheet(f"color: #f44336; font-size: {ThemeEngine.scaled_px(12)}px;")
         except Exception as e:
             self._test_status.setText(f"❌ {str(e)[:100]}")
-            self._test_status.setStyleSheet("color: #f44336; font-size: 12px;")
+            self._test_status.setStyleSheet(f"color: #f44336; font-size: {ThemeEngine.scaled_px(12)}px;")
         finally:
             self._btn_fetch_models.setEnabled(True)
 
@@ -698,7 +712,8 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         """测试 Custom API 连接"""
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
-        model = self._models_combo.currentText().strip() or 'test'
+        models = self._model_names()
+        model = models[0] if models else 'test'
 
         if not url:
             self._test_status.setText("⚠ 请先填写 API URL")
@@ -741,19 +756,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
     def _on_accept(self):
         """确认前校验必填项"""
         url = self._url_edit.text().strip()
-        model_text = self._models_combo.currentText().strip()
+        models = self._model_names()
         if not url:
             QtWidgets.QMessageBox.warning(self, "提示", "请填写 API URL。")
             return
-        if not model_text:
+        if not models:
             QtWidgets.QMessageBox.warning(self, "提示", "请填写至少一个模型名。")
             return
         self.accept()
 
     def get_config(self) -> dict:
         """返回用户配置的字典"""
-        model = self._models_combo.currentText().strip()
-        models = [model] if model else []
+        models = self._model_names()
         return {
             'api_url': self._url_edit.text().strip(),
             'api_key': self._key_edit.text().strip(),
