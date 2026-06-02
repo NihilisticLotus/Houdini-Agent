@@ -330,9 +330,8 @@ class ThinkingSection(CollapsibleSection):
     _MAX_HEIGHT_PX = 400
     
     def __init__(self, parent=None):
-        # ★ 默认展开（用户要求不自动折叠）；section 整体初始 setVisible(False)，
-        #   首次收到思考内容时 setVisible(True) 即可，内容区已处于展开状态。
-        super().__init__(tr('thinking.init'), icon="", collapsed=False, parent=parent)
+        # 历史恢复时默认折叠；实时生成思考内容时由 AIResponse.add_thinking 展开。
+        super().__init__(tr('thinking.init'), icon="", collapsed=True, parent=parent)
         # ★ 防止被父布局拉伸 —— 内容多大就多大
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
@@ -345,7 +344,7 @@ class ThinkingSection(CollapsibleSection):
         self._round_count = 0
         
         # ★ 思考内容 — QPlainTextEdit(readOnly)，自带滚动条
-        self._text_font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
+        self._text_font = ThemeEngine.font(CursorTheme.FONT_BODY, 11)
         
         self.thinking_label = QtWidgets.QPlainTextEdit()
         self.thinking_label.setReadOnly(True)
@@ -431,8 +430,7 @@ class ThinkingSection(CollapsibleSection):
         self._accumulated_seconds += (time.time() - self._round_start)
         total = self._accumulated_seconds
         self.set_title(tr('thinking.done', _fmt_duration(total)))
-        # ★ 防御性展开：确保思考区块在任何情况下都保持展开
-        self.expand()
+        self.collapse()
 
 
 # ============================================================
@@ -887,12 +885,16 @@ class UserMessage(QtWidgets.QWidget):
         self._collapsed = False  # 初始状态由 _maybe_collapse 决定
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 8, 0, 4)
+        layout.setContentsMargins(0, 16, 4, 8)
         layout.setSpacing(0)
 
         # ---- 主容器（带左边框） ----
         self._container = QtWidgets.QWidget()
         self._container.setObjectName("userMsgContainer")
+        self._container.setSizePolicy(
+            QtWidgets.QSizePolicy.Maximum,
+            QtWidgets.QSizePolicy.Preferred,
+        )
         container_layout = QtWidgets.QVBoxLayout(self._container)
         container_layout.setContentsMargins(12, 8, 12, 4)
         container_layout.setSpacing(2)
@@ -915,12 +917,32 @@ class UserMessage(QtWidgets.QWidget):
         self._toggle_btn.setVisible(False)  # 默认隐藏，_maybe_collapse 决定
         container_layout.addWidget(self._toggle_btn)
 
-        layout.addWidget(self._container)
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addStretch(1)
+        row.addWidget(self._container, 0, QtCore.Qt.AlignRight)
+        layout.addLayout(row)
 
         # 延迟判断是否需要折叠（等 QLabel 完成布局后再算行数）
         QtCore.QTimer.singleShot(0, self._maybe_collapse)
+        QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
     # ------------------------------------------------------------------
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._update_bubble_width()
+
+    def _update_bubble_width(self):
+        max_w = max(260, int(self.width() * 0.86))
+        self._container.setMaximumWidth(max_w)
+        content_max = max(120, max_w - 24)
+        self.content.setMaximumWidth(content_max)
+        lines = (self.content.text() or self._full_text or "").splitlines() or [""]
+        fm = QtGui.QFontMetrics(self.content.font())
+        natural_w = max(fm.horizontalAdvance(line) for line in lines) + 2
+        self.content.setMinimumWidth(min(content_max, max(40, natural_w)))
+
     def _maybe_collapse(self):
         """检查文本是否超过阈值行数，超过则自动折叠"""
         line_count = self._full_text.count('\n') + 1
@@ -941,11 +963,13 @@ class UserMessage(QtWidgets.QWidget):
         self.content.setText(preview)
         remaining = len(lines) - self._COLLAPSED_MAX_LINES
         self._toggle_btn.setText(tr('msg.expand', remaining))
+        QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
     def _apply_expanded(self):
         """应用展开状态：显示完整文本"""
         self.content.setText(self._full_text)
         self._toggle_btn.setText(tr('msg.collapse'))
+        QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
     def _toggle_collapse(self):
         self._collapsed = not self._collapsed
@@ -1021,14 +1045,14 @@ class AIResponse(QtWidgets.QWidget):
         layout.addWidget(self.execution_section)
         
         # === Python Shell 区块（可折叠，默认折叠）===
-        self.shell_section = CollapsibleSection("Python Shell", collapsed=True, parent=self)
+        self.shell_section = CollapsibleSection(tr("shell.python"), collapsed=True, parent=self)
         self.shell_section.setVisible(False)
         self.shell_section.header.setObjectName("shellHeaderPython")
         layout.addWidget(self.shell_section)
         
         # === System Shell 区块（可折叠，默认折叠）===
         self._sys_shell_count = 0
-        self.sys_shell_section = CollapsibleSection("System Shell", collapsed=True, parent=self)
+        self.sys_shell_section = CollapsibleSection(tr("shell.system"), collapsed=True, parent=self)
         self.sys_shell_section.setVisible(False)
         self.sys_shell_section.header.setObjectName("shellHeaderSystem")
         layout.addWidget(self.sys_shell_section)
@@ -1087,7 +1111,7 @@ class AIResponse(QtWidgets.QWidget):
         # ★ 显式设置字体，确保流式和渲染后使用同一字体族和大小
         _stream_font = QtGui.QFont()
         _stream_font.setFamilies(['Microsoft YaHei', 'SimSun', 'Segoe UI'])
-        _stream_font.setPixelSize(ThemeEngine.scaled_px(14))  # 与 {FS_MD}=14 一致
+        _stream_font.setPixelSize(ThemeEngine.scaled_px(11))  # 与 {FS_CHAT}=11 一致
         self.content_label.setFont(_stream_font)
         self.content_label.document().setDefaultFont(_stream_font)
         # ★ 设置行间距为 1.6 倍，与 HTML 中的 line-height:1.6 保持一致
@@ -1131,7 +1155,7 @@ class AIResponse(QtWidgets.QWidget):
         self._shell_count += 1
         if not self.shell_section.isVisible():
             self.shell_section.setVisible(True)
-        self.shell_section.set_title(f"Python Shell ({self._shell_count})")
+        self.shell_section.set_title(f"{tr('shell.python')} ({self._shell_count})")
         self.shell_section.add_widget(widget)
     
     def add_sys_shell_widget(self, widget: 'SystemShellWidget'):
@@ -1139,7 +1163,7 @@ class AIResponse(QtWidgets.QWidget):
         self._sys_shell_count += 1
         if not self.sys_shell_section.isVisible():
             self.sys_shell_section.setVisible(True)
-        self.sys_shell_section.set_title(f"System Shell ({self._sys_shell_count})")
+        self.sys_shell_section.set_title(f"{tr('shell.system')} ({self._sys_shell_count})")
         self.sys_shell_section.add_widget(widget)
     
     def add_status(self, text: str):
@@ -2497,12 +2521,12 @@ class StreamingPlanCard(QtWidgets.QWidget):
         icon_lbl.setFixedWidth(18)
         header.addWidget(icon_lbl)
 
-        self._title_lbl = QtWidgets.QLabel("Planning...")
+        self._title_lbl = QtWidgets.QLabel(tr("plan.planning"))
         self._title_lbl.setObjectName("planViewerTitle")
         self._title_lbl.setWordWrap(True)
         header.addWidget(self._title_lbl, 1)
 
-        self._status_badge = QtWidgets.QLabel("STREAMING")
+        self._status_badge = QtWidgets.QLabel(tr("plan.status.streaming"))
         self._status_badge.setObjectName("planStatusBadge")
         self._status_badge.setAlignment(QtCore.Qt.AlignCenter)
         self._status_badge.setFixedHeight(20)
@@ -2531,7 +2555,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         self._card_lay.addWidget(self._steps_container)
 
         # ── 正在生成指示器 ──
-        self._loading_lbl = QtWidgets.QLabel("  ⋯ generating steps...")
+        self._loading_lbl = QtWidgets.QLabel(tr("plan.generating_steps"))
         self._loading_lbl.setObjectName("planStepDep")
         self._card_lay.addWidget(self._loading_lbl)
 
@@ -2595,7 +2619,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
 
         # 检查是否进入 architecture 部分
         if '"architecture"' in accumulated:
-            self._loading_lbl.setText("  ⋯ generating architecture...")
+            self._loading_lbl.setText(tr("plan.generating_architecture"))
 
     def _add_streaming_step(self, step_id: str, text: str):
         """流式阶段：添加一行简化版步骤"""
@@ -2644,7 +2668,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         self._loading_lbl.setVisible(False)
 
         # 用完整数据刷新标题 + 概述（覆盖流式阶段的可能不完整内容）
-        self._title_lbl.setText(plan_data.get("title", self._current_title or "Plan"))
+        self._title_lbl.setText(plan_data.get("title", self._current_title or tr("plan.title")))
         overview = plan_data.get("overview", "")
         if overview:
             self._overview_lbl.setText(overview)
@@ -2738,22 +2762,22 @@ class StreamingPlanCard(QtWidgets.QWidget):
                 detail_lay.addWidget(lbl)
             step_tools = s.get("tools", [])
             if step_tools:
-                detail_lay.addWidget(QtWidgets.QLabel(f"Tools: {', '.join(step_tools)}"))
+                detail_lay.addWidget(QtWidgets.QLabel(f"{tr('plan.tools')}: {', '.join(step_tools)}"))
             expected = s.get("expected_result", "")
             if expected:
-                lbl = QtWidgets.QLabel(f"Expected: {expected}")
+                lbl = QtWidgets.QLabel(f"{tr('plan.expected')}: {expected}")
                 lbl.setObjectName("planStepExpected")
                 lbl.setWordWrap(True)
                 detail_lay.addWidget(lbl)
             fallback = s.get("fallback", "")
             if fallback:
-                lbl = QtWidgets.QLabel(f"Fallback: {fallback}")
+                lbl = QtWidgets.QLabel(f"{tr('plan.fallback')}: {fallback}")
                 lbl.setObjectName("planStepFallback")
                 lbl.setWordWrap(True)
                 detail_lay.addWidget(lbl)
             notes = s.get("notes", "")
             if notes:
-                lbl = QtWidgets.QLabel(f"Note: {notes}")
+                lbl = QtWidgets.QLabel(f"{tr('plan.note')}: {notes}")
                 lbl.setObjectName("planStepNotes")
                 lbl.setWordWrap(True)
                 detail_lay.addWidget(lbl)
@@ -2775,13 +2799,13 @@ class StreamingPlanCard(QtWidgets.QWidget):
         if not has_real_arch:
             arch_data = PlanViewer._build_step_dag(steps)
 
-        dag_title = "Architecture" if has_real_arch else "Flow"
+        dag_title = tr("plan.architecture") if has_real_arch else tr("plan.flow")
         dag_label = QtWidgets.QLabel(dag_title)
         dag_label.setObjectName("planSectionHeader")
         dag_header_row.addWidget(dag_label)
         dag_header_row.addStretch()
 
-        self._dag_toggle = QtWidgets.QPushButton("▾ Collapse")
+        self._dag_toggle = QtWidgets.QPushButton(tr("plan.collapse"))
         self._dag_toggle.setObjectName("planDAGToggle")
         self._dag_toggle.setCursor(QtCore.Qt.PointingHandCursor)
         self._dag_toggle.setFixedHeight(20)
@@ -2821,7 +2845,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         btn_lay.setSpacing(8)
         btn_lay.addStretch()
 
-        self._btn_reject = QtWidgets.QPushButton("Reject")
+        self._btn_reject = QtWidgets.QPushButton(tr("plan.reject"))
         self._btn_reject.setObjectName("planBtnReject")
         self._btn_reject.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_reject.setFixedHeight(28)
@@ -2829,7 +2853,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         self._btn_reject.clicked.connect(self._do_reject)
         btn_lay.addWidget(self._btn_reject)
 
-        self._btn_confirm = QtWidgets.QPushButton("Confirm")
+        self._btn_confirm = QtWidgets.QPushButton(tr("plan.confirm"))
         self._btn_confirm.setObjectName("planBtnConfirm")
         self._btn_confirm.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_confirm.setFixedHeight(28)
@@ -2852,7 +2876,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         if self._btn_confirm:
             self._btn_confirm.setEnabled(False)
             self._btn_reject.setEnabled(False)
-            self._btn_confirm.setText("✓ Confirmed")
+            self._btn_confirm.setText(tr("plan.confirmed"))
         self._refresh_ui()
 
     def set_rejected(self):
@@ -2861,7 +2885,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
         if self._btn_confirm:
             self._btn_confirm.setEnabled(False)
             self._btn_reject.setEnabled(False)
-            self._btn_reject.setText("✗ Rejected")
+            self._btn_reject.setText(tr("plan.rejected"))
         self._refresh_ui()
 
     def update_step_status(self, step_id: str, status: str, result_summary: str = ""):
@@ -2911,7 +2935,7 @@ class StreamingPlanCard(QtWidgets.QWidget):
             return
         collapsed = not self._dag_widget._collapsed
         self._dag_widget.set_collapsed(collapsed)
-        self._dag_toggle.setText("▸ Expand" if collapsed else "▾ Collapse")
+        self._dag_toggle.setText(tr("plan.expand") if collapsed else tr("plan.collapse"))
         if collapsed:
             self._dag_scroll.setFixedHeight(0)
         else:
@@ -2930,13 +2954,13 @@ class StreamingPlanCard(QtWidgets.QWidget):
     def _refresh_ui(self):
         status = self._plan.get("status", "draft")
         badge_map = {
-            "draft":     ("DRAFT",     "#64748b"),
-            "confirmed": ("CONFIRMED", "#a78bfa"),
-            "executing": ("EXECUTING", "#3b82f6"),
-            "completed": ("COMPLETED", "#10b981"),
-            "rejected":  ("REJECTED",  "#ef4444"),
+            "draft":     (tr("plan.status.draft"),     "#64748b"),
+            "confirmed": (tr("plan.status.confirmed"), "#a78bfa"),
+            "executing": (tr("plan.status.executing"), "#3b82f6"),
+            "completed": (tr("plan.status.completed"), "#10b981"),
+            "rejected":  (tr("plan.status.rejected"),  "#ef4444"),
         }
-        text, color = badge_map.get(status, ("DRAFT", "#64748b"))
+        text, color = badge_map.get(status, (tr("plan.status.draft"), "#64748b"))
         self._status_badge.setText(text)
         self._status_badge.setStyleSheet(
             f"color: {color}; background: rgba(0,0,0,0.3); "
@@ -3003,12 +3027,12 @@ class PlanViewer(QtWidgets.QWidget):
         icon_lbl.setFixedWidth(18)
         header.addWidget(icon_lbl)
 
-        self._title_lbl = QtWidgets.QLabel(plan_data.get("title", "Plan"))
+        self._title_lbl = QtWidgets.QLabel(plan_data.get("title", tr("plan.title")))
         self._title_lbl.setObjectName("planViewerTitle")
         self._title_lbl.setWordWrap(True)
         header.addWidget(self._title_lbl, 1)
 
-        self._status_badge = QtWidgets.QLabel("DRAFT")
+        self._status_badge = QtWidgets.QLabel(tr("plan.status.draft"))
         self._status_badge.setObjectName("planStatusBadge")
         self._status_badge.setAlignment(QtCore.Qt.AlignCenter)
         self._status_badge.setFixedHeight(20)
@@ -3031,9 +3055,9 @@ class PlanViewer(QtWidgets.QWidget):
         if complexity or est_ops:
             meta_parts = []
             if complexity:
-                meta_parts.append(f"Complexity: {complexity.upper()}")
+                meta_parts.append(f"{tr('plan.complexity')}: {complexity.upper()}")
             if est_ops:
-                meta_parts.append(f"Est. Operations: {est_ops}")
+                meta_parts.append(f"{tr('plan.est_operations')}: {est_ops}")
             meta_lbl = QtWidgets.QLabel("  |  ".join(meta_parts))
             meta_lbl.setObjectName("planMetaInfo")
             card_lay.addWidget(meta_lbl)
@@ -3136,14 +3160,14 @@ class PlanViewer(QtWidgets.QWidget):
             # 工具列表
             tools = s.get("tools", [])
             if tools:
-                tools_lbl = QtWidgets.QLabel(f"Tools: {', '.join(tools)}")
+                tools_lbl = QtWidgets.QLabel(f"{tr('plan.tools')}: {', '.join(tools)}")
                 tools_lbl.setObjectName("planStepTools")
                 detail_lay.addWidget(tools_lbl)
 
             # 预期结果
             expected = s.get("expected_result", "")
             if expected:
-                exp_lbl = QtWidgets.QLabel(f"Expected: {expected}")
+                exp_lbl = QtWidgets.QLabel(f"{tr('plan.expected')}: {expected}")
                 exp_lbl.setObjectName("planStepExpected")
                 exp_lbl.setWordWrap(True)
                 detail_lay.addWidget(exp_lbl)
@@ -3151,7 +3175,7 @@ class PlanViewer(QtWidgets.QWidget):
             # 回退策略
             fallback = s.get("fallback", "")
             if fallback:
-                fb_lbl = QtWidgets.QLabel(f"Fallback: {fallback}")
+                fb_lbl = QtWidgets.QLabel(f"{tr('plan.fallback')}: {fallback}")
                 fb_lbl.setObjectName("planStepFallback")
                 fb_lbl.setWordWrap(True)
                 detail_lay.addWidget(fb_lbl)
@@ -3159,7 +3183,7 @@ class PlanViewer(QtWidgets.QWidget):
             # 备注
             notes = s.get("notes", "")
             if notes:
-                notes_lbl = QtWidgets.QLabel(f"Note: {notes}")
+                notes_lbl = QtWidgets.QLabel(f"{tr('plan.note')}: {notes}")
                 notes_lbl.setObjectName("planStepNotes")
                 notes_lbl.setWordWrap(True)
                 detail_lay.addWidget(notes_lbl)
@@ -3185,13 +3209,13 @@ class PlanViewer(QtWidgets.QWidget):
             # ── 回退：从 steps 的 depends_on 自动生成步骤依赖图 ──
             arch_data = self._build_step_dag(steps)
 
-        dag_title = "Architecture" if has_real_arch else "Flow"
+        dag_title = tr("plan.architecture") if has_real_arch else tr("plan.flow")
         dag_label = QtWidgets.QLabel(dag_title)
         dag_label.setObjectName("planSectionHeader")
         dag_header_row.addWidget(dag_label)
         dag_header_row.addStretch()
 
-        self._dag_toggle = QtWidgets.QPushButton("▾ Collapse")
+        self._dag_toggle = QtWidgets.QPushButton(tr("plan.collapse"))
         self._dag_toggle.setObjectName("planDAGToggle")
         self._dag_toggle.setCursor(QtCore.Qt.PointingHandCursor)
         self._dag_toggle.setFixedHeight(20)
@@ -3232,7 +3256,7 @@ class PlanViewer(QtWidgets.QWidget):
         btn_lay.setSpacing(8)
         btn_lay.addStretch()
 
-        self._btn_reject = QtWidgets.QPushButton("Reject")
+        self._btn_reject = QtWidgets.QPushButton(tr("plan.reject"))
         self._btn_reject.setObjectName("planBtnReject")
         self._btn_reject.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_reject.setFixedHeight(28)
@@ -3240,7 +3264,7 @@ class PlanViewer(QtWidgets.QWidget):
         self._btn_reject.clicked.connect(self._do_reject)
         btn_lay.addWidget(self._btn_reject)
 
-        self._btn_confirm = QtWidgets.QPushButton("Confirm")
+        self._btn_confirm = QtWidgets.QPushButton(tr("plan.confirm"))
         self._btn_confirm.setObjectName("planBtnConfirm")
         self._btn_confirm.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_confirm.setFixedHeight(28)
@@ -3263,7 +3287,7 @@ class PlanViewer(QtWidgets.QWidget):
         self._plan["status"] = "confirmed"
         self._btn_confirm.setEnabled(False)
         self._btn_reject.setEnabled(False)
-        self._btn_confirm.setText("✓ Confirmed")
+        self._btn_confirm.setText(tr("plan.confirmed"))
         self._refresh_ui()
 
     def set_rejected(self):
@@ -3272,7 +3296,7 @@ class PlanViewer(QtWidgets.QWidget):
         self._plan["status"] = "rejected"
         self._btn_confirm.setEnabled(False)
         self._btn_reject.setEnabled(False)
-        self._btn_reject.setText("✗ Rejected")
+        self._btn_reject.setText(tr("plan.rejected"))
         self._refresh_ui()
 
     def update_step_status(self, step_id: str, status: str, result_summary: str = ""):
@@ -3376,7 +3400,7 @@ class PlanViewer(QtWidgets.QWidget):
     def _toggle_dag(self):
         collapsed = not self._dag_widget._collapsed
         self._dag_widget.set_collapsed(collapsed)
-        self._dag_toggle.setText("▸ Expand" if collapsed else "▾ Collapse")
+        self._dag_toggle.setText(tr("plan.expand") if collapsed else tr("plan.collapse"))
         # ★ 同步滚动区域高度
         if collapsed:
             self._dag_scroll.setFixedHeight(0)
@@ -3395,13 +3419,13 @@ class PlanViewer(QtWidgets.QWidget):
     def _refresh_ui(self):
         status = self._plan.get("status", "draft")
         badge_map = {
-            "draft":     ("DRAFT",     "#64748b"),
-            "confirmed": ("CONFIRMED", "#a78bfa"),
-            "executing": ("EXECUTING", "#3b82f6"),
-            "completed": ("COMPLETED", "#10b981"),
-            "rejected":  ("REJECTED",  "#ef4444"),
+            "draft":     (tr("plan.status.draft"),     "#64748b"),
+            "confirmed": (tr("plan.status.confirmed"), "#a78bfa"),
+            "executing": (tr("plan.status.executing"), "#3b82f6"),
+            "completed": (tr("plan.status.completed"), "#10b981"),
+            "rejected":  (tr("plan.status.rejected"),  "#ef4444"),
         }
-        text, color = badge_map.get(status, ("DRAFT", "#64748b"))
+        text, color = badge_map.get(status, (tr("plan.status.draft"), "#64748b"))
         self._status_badge.setText(text)
         self._status_badge.setStyleSheet(
             f"color: {color}; background: rgba(0,0,0,0.3); "
@@ -3528,7 +3552,7 @@ class AskQuestionCard(QtWidgets.QFrame):
         btn_row.setContentsMargins(0, 6, 0, 0)
         btn_row.addStretch()
 
-        self._btn_cancel = QtWidgets.QPushButton("Skip")
+        self._btn_cancel = QtWidgets.QPushButton(tr("ask.skip"))
         self._btn_cancel.setObjectName("askQuestionBtnCancel")
         self._btn_cancel.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_cancel.setFixedHeight(28)
@@ -3536,7 +3560,7 @@ class AskQuestionCard(QtWidgets.QFrame):
         self._btn_cancel.clicked.connect(self._do_cancel)
         btn_row.addWidget(self._btn_cancel)
 
-        self._btn_submit = QtWidgets.QPushButton("Submit Answer")
+        self._btn_submit = QtWidgets.QPushButton(tr("ask.submit"))
         self._btn_submit.setObjectName("askQuestionBtnSubmit")
         self._btn_submit.setCursor(QtCore.Qt.PointingHandCursor)
         self._btn_submit.setFixedHeight(28)
@@ -3568,7 +3592,7 @@ class AskQuestionCard(QtWidgets.QFrame):
         answers = self._collect_answers()
         self._btn_submit.setEnabled(False)
         self._btn_cancel.setEnabled(False)
-        self._btn_submit.setText("✓ Submitted")
+        self._btn_submit.setText(tr("ask.submitted"))
         self.answered.emit(answers)
 
     def _do_cancel(self):
@@ -3577,7 +3601,7 @@ class AskQuestionCard(QtWidgets.QFrame):
         self._answered = True
         self._btn_submit.setEnabled(False)
         self._btn_cancel.setEnabled(False)
-        self._btn_cancel.setText("Skipped")
+        self._btn_cancel.setText(tr("ask.skipped"))
         self.cancelled.emit()
 
 
@@ -5273,7 +5297,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        text = f"Thinking {self._elapsed:.1f}s" if self._elapsed > 0 else "Thinking..."
+        text = tr("thinking.progress", f"{self._elapsed:.1f}s") if self._elapsed > 0 else tr("thinking.init")
         font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
@@ -5304,7 +5328,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        text = "Generating..."
+        text = tr("status.generating")
         font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
@@ -5336,7 +5360,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
         progress = getattr(self, '_planning_progress', '')
-        text = f"Planning... {progress}" if progress else "Planning..."
+        text = f"{tr('plan.planning')} {progress}" if progress else tr("plan.planning")
         font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
@@ -5368,7 +5392,7 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         w, h = self.width(), self.height()
         tool_name = getattr(self, '_tool_name', '')
-        text = f"Exec: {tool_name}" if tool_name else "Executing..."
+        text = tr("exec.tool", tool_name) if tool_name else tr("exec.running")
         font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
         p.setFont(font)
         fm = p.fontMetrics()
@@ -5677,6 +5701,65 @@ class SlashCommandPopup(QtWidgets.QListWidget):
 # 输入区域
 # ============================================================
 
+class InputResizeHandle(QtWidgets.QFrame):
+    """Thin drag handle above the chat input."""
+
+    dragged = QtCore.Signal(int)  # dy since last mouse move
+    resetRequested = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("inputResizeHandle")
+        self.setFixedHeight(8)
+        self.setCursor(QtCore.Qt.SizeVerCursor)
+        self.setToolTip(tr("input.resize.tooltip"))
+        self._dragging = False
+        self._last_global_y = 0
+
+    @staticmethod
+    def _event_global_y(event) -> int:
+        try:
+            return int(event.globalY())
+        except AttributeError:
+            try:
+                return int(event.globalPosition().y())
+            except AttributeError:
+                return int(event.globalPos().y())
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == QtCore.Qt.LeftButton:
+            self._dragging = True
+            self._last_global_y = self._event_global_y(event)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._dragging:
+            y = self._event_global_y(event)
+            dy = y - self._last_global_y
+            self._last_global_y = y
+            if dy:
+                self.dragged.emit(dy)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        self._dragging = False
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        if event.button() == QtCore.Qt.LeftButton:
+            self.resetRequested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def retranslate(self):
+        self.setToolTip(tr("input.resize.tooltip"))
+
+
 class ChatInput(QtWidgets.QPlainTextEdit):
     """聊天输入框 — 自适应高度，支持自动换行、多行输入、图片粘贴/拖拽
     
@@ -5691,7 +5774,8 @@ class ChatInput(QtWidgets.QPlainTextEdit):
     slashTriggered = QtCore.Signal(str, QtCore.QRect)  # / 触发补全: (当前前缀, 光标矩形)
     
     _MIN_H = 44
-    _MAX_H = 220
+    _AUTO_MAX_H = 220
+    _MANUAL_MAX_H = 360
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -5706,7 +5790,10 @@ class ChatInput(QtWidgets.QPlainTextEdit):
         self.setAcceptDrops(True)
         self.setObjectName("chatInput")
         self.setMinimumHeight(self._MIN_H)
-        self.setMaximumHeight(self._MAX_H)
+        self.setMaximumHeight(self._MANUAL_MAX_H)
+        self._manual_height = self._load_manual_height()
+        if self._manual_height is not None:
+            self.setFixedHeight(self._manual_height)
         
         # ★ PySide2 / PySide6 全平台 IME 支持（中文/日文/韩文）
         # ------------------------------------------------------------------
@@ -5760,6 +5847,13 @@ class ChatInput(QtWidgets.QPlainTextEdit):
     
     def _adjust_height(self):
         """根据视觉行数（含软换行）自动调整高度——向上扩展"""
+        if self._manual_height is not None:
+            h = max(self._MIN_H, min(self._MANUAL_MAX_H, int(self._manual_height)))
+            if h != self.height():
+                self.setFixedHeight(h)
+                self.updateGeometry()
+            return
+
         doc = self.document()
         # 统计所有视觉行（包括 word-wrap 产生的软换行）
         visual_lines = 0
@@ -5784,11 +5878,43 @@ class ChatInput(QtWidgets.QPlainTextEdit):
         padding = margins.top() + margins.bottom() + frame_w * 2 + 18
         total = content_h + padding
         
-        h = max(self._MIN_H, min(self._MAX_H, total))
+        h = max(self._MIN_H, min(self._AUTO_MAX_H, total))
         if h != self.height():
             self.setFixedHeight(h)
             # 通知父布局重新分配空间
             self.updateGeometry()
+
+    def _load_manual_height(self):
+        try:
+            settings = QtCore.QSettings("HoudiniAI", "Assistant")
+            val = settings.value("input_manual_height", "")
+            if val in ("", None):
+                return None
+            h = int(val)
+            return max(self._MIN_H, min(self._MANUAL_MAX_H, h))
+        except Exception:
+            return None
+
+    def _save_manual_height(self):
+        try:
+            settings = QtCore.QSettings("HoudiniAI", "Assistant")
+            if self._manual_height is None:
+                settings.remove("input_manual_height")
+            else:
+                settings.setValue("input_manual_height", int(self._manual_height))
+        except Exception:
+            pass
+
+    def set_manual_height(self, height: int):
+        self._manual_height = max(self._MIN_H, min(self._MANUAL_MAX_H, int(height)))
+        self.setFixedHeight(self._manual_height)
+        self._save_manual_height()
+        self.updateGeometry()
+
+    def reset_auto_height(self):
+        self._manual_height = None
+        self._save_manual_height()
+        self._adjust_height()
     
     def _hide_completer(self):
         """隐藏补全弹出框"""
@@ -6214,8 +6340,11 @@ class StopButton(QtWidgets.QPushButton):
     """停止按钮"""
     
     def __init__(self, parent=None):
-        super().__init__("Stop", parent)
+        super().__init__(tr("btn.stop"), parent)
         self.setObjectName("btnStop")
+
+    def retranslate(self):
+        self.setText(tr("btn.stop"))
 
 
 # ============================================================
@@ -6226,8 +6355,11 @@ class SendButton(QtWidgets.QPushButton):
     """发送按钮"""
     
     def __init__(self, parent=None):
-        super().__init__("Send", parent)
+        super().__init__(tr("btn.send"), parent)
         self.setObjectName("btnSend")
+
+    def retranslate(self):
+        self.setText(tr("btn.send"))
 
 
 # ============================================================
@@ -6309,7 +6441,7 @@ class TodoList(QtWidgets.QWidget):
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(6)
         
-        self.title_label = QtWidgets.QLabel("Todo")
+        self.title_label = QtWidgets.QLabel(tr("todo.title"))
         self.title_label.setObjectName("todoTitle")
         header.addWidget(self.title_label)
         
@@ -6319,7 +6451,7 @@ class TodoList(QtWidgets.QWidget):
         
         header.addStretch()
         
-        self.clear_btn = QtWidgets.QPushButton("Clear")
+        self.clear_btn = QtWidgets.QPushButton(tr("todo.clear"))
         self.clear_btn.setFixedHeight(20)
         self.clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.clear_btn.setObjectName("todoClearBtn")
@@ -6342,6 +6474,10 @@ class TodoList(QtWidgets.QWidget):
         
         outer.addWidget(self._card)
         self.setVisible(False)
+
+    def retranslate(self):
+        self.title_label.setText(tr("todo.title"))
+        self.clear_btn.setText(tr("todo.clear"))
     
     def add_todo(self, todo_id: str, text: str, status: str = "pending") -> TodoItem:
         if todo_id in self._todos:

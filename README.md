@@ -2,7 +2,7 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
-An AI-powered assistant for SideFX Houdini, featuring autonomous multi-turn tool calling, web search, VEX/Python code execution, Plan mode for complex tasks, a brain-inspired long-term memory system, a plugin hook system for community extensions, user-defined context rules, and a modern dark UI with bilingual support.
+An AI-powered assistant for SideFX Houdini, featuring autonomous multi-turn tool calling, web search, VEX/Python code execution, Plan mode for complex tasks, always-on workflow experience distillation and promotion review, a brain-inspired long-term memory system, a plugin hook system for community extensions, user-defined context rules, and a modern dark UI with bilingual support.
 
 Built on the **OpenAI Function Calling** protocol, the agent can read node networks, create/modify/connect nodes, run VEX wrangles, execute system shell commands, search the web, query local documentation, create structured execution plans, learn from past interactions, and be extended via plugins — all within an iterative agent loop. A centralized **ToolRegistry** unifies core tools, skills, and plugin tools with mode-based access control.
 
@@ -27,6 +27,7 @@ User request → AI plans → call tools → inspect results → call more tools
 - **Stop anytime** — interrupt the running agent loop at any point
 - **Smart context management** — round-based conversation trimming that never truncates user/assistant messages, only compresses tool results
 - **Long-term memory** — brain-inspired three-layer memory system (episodic, semantic, procedural) with reward-driven learning and automatic reflection
+- **Workflow experience review** — automatically extracts candidate lessons after completed tasks, strips thinking/tool noise, and promotes valid knowledge into long-term memory through a four-lane review board
 - **Plugin system** — external community extensions via `plugins/` directory with hook events, custom tools, UI buttons, and settings
 - **User Rules** — Cursor-style persistent context rules that are automatically injected into every AI request
 
@@ -71,6 +72,7 @@ User request → AI plans → call tools → inspect results → call more tools
 - **Plugin Manager** — tabbed dialog with Plugins, Tools, and Skills management (enable/disable, reload, settings)
 - **Rules Editor** — dialog for creating and managing persistent user context rules
 - **Memory Manager** — dialog for browsing, editing, and exporting long-term semantic memories
+- **Workflow Experience Review** — four-lane candidate / promoted / later / rejected board with distilled summaries, evidence, confidence, and promotion output in the detail pane
 - **PySide2 IME support** — full Chinese/Japanese/Korean input method support on both Windows and macOS
 
 ## Available Tools (40+)
@@ -170,6 +172,8 @@ User request → AI plans → call tools → inspect results → call more tools
 |------|-------------|
 | `search_memory` | Search the semantic memory store — retrieve relevant past experiences, rules, and strategies by category, abstraction level, and confidence scoring |
 
+Workflow experience distillation stays enabled by default: after a task finishes, the agent extracts candidate lessons from context, summarizes and scores them, then sends them to the review board for promotion, later review, or rejection.
+
 ### Plan Mode
 
 | Tool | Description |
@@ -252,6 +256,7 @@ Houdini-Agent/
     │   ├── theme_engine.py        # QSS template rendering & font-size scaling
     │   ├── font_settings_dialog.py # Font zoom slider dialog
     │   ├── memory_manager_dialog.py # Memory system UI — browse, edit, delete, export memories
+    │   ├── experience_review_dialog.py # Workflow experience review board — candidate, promoted, later, rejected lanes
     │   └── style_template.qss    # Centralized QSS theme stylesheet
     ├── skills/                     # Pre-built analysis scripts (auto-registered as skill:xxx tools)
     │   ├── __init__.py            # Skill registry, loader & ToolRegistry integration
@@ -276,6 +281,7 @@ Houdini-Agent/
         ├── tool_registry.py       # Unified ToolRegistry — centralizes core/skill/plugin/user tools
         ├── rules_manager.py       # User Rules manager (UI rules + file rules, prompt injection)
         ├── memory_store.py        # Three-layer memory (episodic/semantic/procedural) with SQLite
+        ├── experience_store.py    # Workflow experience candidates, distilled summaries, and promotion persistence
         ├── embedding.py           # Local text embedding (sentence-transformers / fallback)
         ├── reward_engine.py       # Reward scoring & memory importance updates
         ├── reflection.py          # Rule-based + LLM deep reflection module
@@ -388,17 +394,26 @@ The plan is displayed as an interactive `PlanViewer` card with a DAG flow diagra
 
 ### Brain-inspired Long-term Memory System
 
-A five-module system that enables the agent to learn and improve over time:
+A six-module system that enables the agent to learn and improve over time:
 
 | Module | Description |
 |--------|-------------|
 | `memory_store.py` | Three-layer SQLite storage — **Episodic** (specific task experiences), **Semantic** (abstracted rules from reflection), **Procedural** (problem-solving strategies with priority) |
+| `experience_store.py` | Workflow experience queue and promotion log — distills task context into conclusions, applicable scenarios, validation methods, and evidence while filtering `<think>`, Todo prompts, and tool chatter |
 | `embedding.py` | Local text embedding using `sentence-transformers/all-MiniLM-L6-v2` (384-dim) with fallback to character n-gram pseudo-vectors |
 | `reward_engine.py` | Dopamine-inspired reward scoring — success, efficiency, novelty, error penalty; drives memory importance strengthening/weakening with time decay |
 | `reflection.py` | Hybrid reflection — rule-based extraction after every task + periodic LLM deep reflection to generate semantic rules and strategy updates |
 | `growth_tracker.py` | Rolling-window metrics (error rate, success rate, tool call efficiency) + personality trait formation (efficiency bias, risk tolerance, verbosity, proactivity) |
 
 Memory is activated at query time: relevant episodic memories, semantic rules, and procedural strategies are retrieved via cosine similarity and injected into the system prompt.
+
+#### Workflow Experience Review & Promotion
+
+Workflow experience distillation and promotion stay enabled by default. After each task, the system extracts candidate lessons from the user goal, tool results, validation results, and final response, but it does not write raw reasoning traces directly into long-term memory.
+
+The review dialog uses a four-lane flow: **Candidate** keeps unreviewed lessons, **Promoted** marks items ready for long-term memory, **Later** preserves low-confidence but potentially useful samples, and **Rejected** archives invalid or duplicated items. The detail pane shows the distilled summary, raw evidence, quality score, confidence, and promotion path, and the title-bar close button follows the same close behavior as the in-dialog close action.
+
+Distillation prioritizes reusable knowledge: conclusion, applicable scenario, correct action, validation method, and counterexample boundary. The system filters `<think>` content, Todo continuation prompts, repeated tool logs, and plain progress text so process notes do not masquerade as durable experience.
 
 ### Plugin System
 
@@ -567,6 +582,7 @@ Created attribwrangle1 with random Cd attribute on all points.
 
 ## Version History
 
+- **Current update** — **Workflow experience review and promotion**: Added always-on workflow experience candidate extraction and a four-lane review board (candidate / promoted / later / rejected), with distilled summaries, evidence, confidence, and promotion output in the detail pane. Experience distillation now extracts conclusions, applicable scenarios, validation methods, and useful evidence from context while filtering `<think>`, Todo continuation prompts, and tool chatter. Fixed the review dialog title-bar close button and updated long-term memory documentation.
 - **v1.5.5** — **DeepSeek V4 API adaptation + JSON Output**: New `deepseek-v4-flash` / `deepseek-v4-pro` models with explicit `thinking` parameter and `reasoning_effort` support. Old models (`deepseek-chat` / `deepseek-reasoner`) retained for compatibility (deprecated 2026/07/24). Default model migrated to `deepseek-v4-flash`. `chat_stream()` / `chat()` gain `response_format` parameter; reflection module uses `json_object` mode for reliable JSON output. V4 model pricing, context limits, and feature configs added.
 - **v1.5.4** — **Long-term memory global toggle**: Added enable/disable switch for the entire memory system. Multiple fixes.
 - **v1.5.3** — **Memory Manager dialog**: New `MemoryManagerDialog` UI for browsing, editing, deleting, and exporting semantic memories. `/memories` command support.

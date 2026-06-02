@@ -415,6 +415,28 @@ QScrollArea#chatScrollArea {
     border: none;
     background: transparent;
 }
+QScrollArea#chatScrollArea QScrollBar:vertical {
+    background: rgba(36,30,22,120);
+    width: 10px;
+    margin: 2px 2px 2px 0;
+    border-radius: 5px;
+}
+QScrollArea#chatScrollArea QScrollBar::handle:vertical {
+    background: rgba(212,165,116,75);
+    border-radius: 5px;
+    min-height: 42px;
+}
+QScrollArea#chatScrollArea QScrollBar::handle:vertical:hover {
+    background: rgba(224,184,136,125);
+}
+QScrollArea#chatScrollArea QScrollBar::add-line:vertical,
+QScrollArea#chatScrollArea QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollArea#chatScrollArea QScrollBar::add-page:vertical,
+QScrollArea#chatScrollArea QScrollBar::sub-page:vertical {
+    background: transparent;
+}
 
 
 /* ============================================================
@@ -450,13 +472,14 @@ QPushButton#ctxRefreshBtn:hover {
    ============================================================ */
 
 QWidget#userMsgContainer {
-    background: rgba(255,255,255,4);
-    border-left: none;
+    background: rgba(70,68,62,92);
+    border-left: 2px solid rgba(212,165,116,76);
+    border-right: 1px solid rgba(212,165,116,36);
     border-radius: 8px;
 }
 QLabel#userMsgText {
-    color: #ffffff;
-    font-size: {FS_MD}px;
+    color: #f1f5f9;
+    font-size: {FS_USER_MSG}px;
     background: transparent;
 }
 QPushButton#userMsgToggle {
@@ -483,7 +506,7 @@ QFrame#aiSummary {
 }
 QLabel#aiStatusLabel {
     color: #64748b;
-    font-size: {FS_BODY}px;
+    font-size: {FS_CHAT}px;
 }
 QPushButton#aiCopyBtn {
     color: #94a3b8;
@@ -508,12 +531,12 @@ QPlainTextEdit#aiContentLabel {
     background: transparent;
     border: none;
     padding: 0px 0px;
-    font-size: {FS_MD}px;
+    font-size: {FS_CHAT}px;
     font-family: 'Microsoft YaHei', 'SimSun', 'Segoe UI', sans-serif;
 }
 QPlainTextEdit#aiContentLabel[state="empty"] {
     color: #64748b;
-    font-size: {FS_BODY}px;
+    font-size: {FS_CHAT}px;
 }
 
 /* Status line */
@@ -588,9 +611,9 @@ QLabel#collapseContentLabel {
 
 QPushButton#thinkHeader {
     color: #a78bfa;
-    font-size: {FS_MD}px;
+    font-size: {FS_SM}px;
     text-align: left;
-    padding: 5px 10px;
+    padding: 4px 10px;
     border: none;
     background: rgba(20,16,40,140);
     border-radius: 6px;
@@ -606,7 +629,7 @@ QPlainTextEdit#thinkLabel {
     background: transparent;
     border: none;
     padding: 4px;
-    font-size: {FS_BODY}px;
+    font-size: {FS_CHAT}px;
 }
 
 
@@ -902,6 +925,19 @@ QFrame#inputArea {
     border-radius: 12px;
 }
 
+QFrame#inputResizeHandle {
+    background: transparent;
+    border: none;
+    border-top: 1px solid rgba(212,165,116,30);
+    border-bottom: 1px solid rgba(20,18,14,80);
+    min-height: 10px;
+    max-height: 10px;
+}
+QFrame#inputResizeHandle:hover {
+    background: rgba(212,165,116,24);
+    border-top-color: rgba(212,165,116,95);
+}
+
 /* Batch undo/keep bar */
 QFrame#batchBar {
     background: rgba(40,35,28,200);
@@ -963,6 +999,10 @@ QComboBox#modeCombo QAbstractItemView {
     border-radius: 6px;
     padding: 2px;
 }
+QComboBox#modeCombo QAbstractItemView::item {
+    min-height: 22px;
+    padding: 3px 10px;
+}
 /* Agent = khaki muted */
 QComboBox#modeCombo[mode="agent"] {
     color: #8a7e6e;
@@ -1010,7 +1050,7 @@ QPlainTextEdit#chatInput {
     border: 1px solid rgba(180,160,130,12);
     border-radius: 10px;
     padding: 8px 10px;
-    font-size: {FS_MD}px;
+    font-size: {FS_INPUT}px;
 }
 QPlainTextEdit#chatInput:focus {
     border-color: rgba(212,165,116,60);
@@ -1066,6 +1106,22 @@ QPushButton#btnSend:hover {
 QPushButton#btnSend:disabled {
     background: rgba(45,40,32,180);
     color: #6b5f50;
+}
+
+QPushButton#btnClearChat {
+    color: #d4c5b0;
+    border: 1px solid rgba(180,160,130,18);
+    border-radius: 8px;
+    font-size: {FS_SM}px;
+    padding: 4px 12px;
+    min-height: 26px;
+    font-weight: bold;
+    background: rgba(42,36,28,160);
+}
+QPushButton#btnClearChat:hover {
+    color: #ffffff;
+    background: rgba(90,64,48,190);
+    border-color: rgba(212,165,116,70);
 }
 /* Ask 模式 = warm green */
 QPushButton#btnSend[mode="ask"] {
@@ -1884,7 +1940,7 @@ QLabel#tokenDataCell {
 
 QLabel#richText {
     color: #e2e8f0;
-    font-size: {FS_MD}px;
+    font-size: {FS_CHAT}px;
     padding: 0px 0px;
     font-family: 'Microsoft YaHei', 'SimSun', 'Segoe UI', sans-serif;
 }

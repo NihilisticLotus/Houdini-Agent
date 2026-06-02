@@ -98,7 +98,7 @@ class SessionManagerMixin:
         scroll_area, chat_container, chat_layout = self._create_session_widgets()
         self.session_stack.addWidget(scroll_area)
         
-        tab_index = self.session_tabs.addTab("Chat 1")
+        tab_index = self.session_tabs.addTab(tr("session.default_label", 1))
         self.session_tabs.setTabData(tab_index, session_id)
         
         # 设置当前引用
@@ -159,7 +159,7 @@ class SessionManagerMixin:
         # 创建新会话
         self._session_counter += 1
         new_id = str(uuid.uuid4())[:8]
-        label = f"Chat {self._session_counter}"
+        label = tr("session.default_label", self._session_counter)
         
         scroll_area, chat_container, chat_layout = self._create_session_widgets()
         self.session_stack.addWidget(scroll_area)
@@ -325,7 +325,7 @@ class SessionManagerMixin:
         for i in range(self.session_tabs.count()):
             if self.session_tabs.tabData(i) == self._session_id:
                 current_label = self.session_tabs.tabText(i)
-                if current_label.startswith("Chat "):
+                if current_label.startswith("Chat ") or current_label.startswith("对话 "):
                     short = text[:18].replace('\n', ' ').strip()
                     if len(text) > 18:
                         short += "..."
@@ -335,3 +335,12 @@ class SessionManagerMixin:
     def _retranslate_session_tabs(self):
         """语言切换后更新会话标签栏翻译文本"""
         self.btn_new_session.setToolTip(tr('session.new'))
+        for i in range(self.session_tabs.count()):
+            label = self.session_tabs.tabText(i)
+            clean = label[len(self._TAB_RUNNING_PREFIX):] if hasattr(self, '_TAB_RUNNING_PREFIX') and label.startswith(self._TAB_RUNNING_PREFIX) else label
+            parts = clean.split()
+            if len(parts) == 2 and parts[0] in ("Chat", "对话") and parts[1].isdigit():
+                new_label = tr("session.default_label", int(parts[1]))
+                if clean != label:
+                    new_label = self._TAB_RUNNING_PREFIX + new_label
+                self.session_tabs.setTabText(i, new_label)

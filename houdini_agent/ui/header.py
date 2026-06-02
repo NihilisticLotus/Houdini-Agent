@@ -203,12 +203,12 @@ class HeaderMixin:
         row.addWidget(self.key_status)
         
         # Web / Think 开关
-        self.web_check = QtWidgets.QCheckBox("Web")
+        self.web_check = QtWidgets.QCheckBox(tr("header.web"))
         self.web_check.setObjectName("chkWeb")
         self.web_check.setChecked(True)
         row.addWidget(self.web_check)
         
-        self.think_check = QtWidgets.QCheckBox("Think")
+        self.think_check = QtWidgets.QCheckBox(tr("header.think"))
         self.think_check.setObjectName("chkThink")
         self.think_check.setChecked(True)
         self.think_check.setToolTip(tr('header.think.tooltip'))
@@ -226,23 +226,23 @@ class HeaderMixin:
         
         # -------- 隐藏按钮（保持 self.btn_xxx 引用兼容 _wire_events）--------
         # 这些按钮不加入布局，仅用于信号连接
-        self.btn_key = QtWidgets.QPushButton("Key")
+        self.btn_key = QtWidgets.QPushButton(tr("menu.api_key"))
         self.btn_key.setObjectName("btnSmall")
         self.btn_key.setVisible(False)
         
-        self.btn_clear = QtWidgets.QPushButton("Clear")
+        self.btn_clear = QtWidgets.QPushButton(tr("btn.clear"))
         self.btn_clear.setObjectName("btnSmall")
         self.btn_clear.setVisible(False)
         
-        self.btn_cache = QtWidgets.QPushButton("Cache")
+        self.btn_cache = QtWidgets.QPushButton(tr("menu.cache"))
         self.btn_cache.setObjectName("btnSmall")
         self.btn_cache.setVisible(False)
         
-        self.btn_optimize = QtWidgets.QPushButton("Opt")
+        self.btn_optimize = QtWidgets.QPushButton(tr("menu.optimize"))
         self.btn_optimize.setObjectName("btnOptimize")
         self.btn_optimize.setVisible(False)
         
-        self.btn_update = QtWidgets.QPushButton("Update")
+        self.btn_update = QtWidgets.QPushButton(tr("menu.update"))
         self.btn_update.setObjectName("btnUpdate")
         self.btn_update.setVisible(False)
         
@@ -265,28 +265,30 @@ class HeaderMixin:
         """显示溢出菜单：低频功能集中在此"""
         menu = QtWidgets.QMenu(self)
         
-        menu.addAction("API Key", self.btn_key.click)
-        menu.addAction("Clear Chat", self.btn_clear.click)
-        menu.addAction("Cache", self.btn_cache.click)
-        menu.addAction("Optimize", self.btn_optimize.click)
+        menu.addAction(tr("menu.api_key"), self.btn_key.click)
+        menu.addAction(tr("menu.clear_chat"), self.btn_clear.click)
+        menu.addAction(tr("menu.cache"), self.btn_cache.click)
+        menu.addAction(tr("menu.optimize"), self.btn_optimize.click)
         menu.addSeparator()
-        menu.addAction("Update", self.btn_update.click)
-        menu.addAction("Font (Aa)", self.btn_font_scale.click)
+        menu.addAction(tr("menu.update"), self.btn_update.click)
+        menu.addAction(tr("menu.font"), self.btn_font_scale.click)
         menu.addSeparator()
         menu.addAction(tr('rules.menu_label'), self._open_rules_editor)
         menu.addAction(tr('plugin.menu_label'), self._open_plugin_manager)
+        menu.addAction(tr('experience.menu_label'), self._open_experience_review)
 
         # 长期记忆系统全局开关（默认关闭）—— checkable action
         act_memory = menu.addAction(tr('memory.menu_label'))
         act_memory.setCheckable(True)
-        act_memory.setChecked(bool(getattr(self, '_memory_enabled', False)))
+        act_memory.setChecked(True)
+        act_memory.setEnabled(False)
         act_memory.setToolTip(tr('memory.menu_tooltip'))
         act_memory.toggled.connect(self._on_memory_toggle_from_menu)
 
         menu.addSeparator()
         
         # 语言子菜单
-        lang_menu = menu.addMenu("Language")
+        lang_menu = menu.addMenu(tr("menu.language"))
         act_zh = lang_menu.addAction("中文")
         act_en = lang_menu.addAction("EN")
         current_lang = get_language()
@@ -298,9 +300,17 @@ class HeaderMixin:
         act_en.triggered.connect(lambda: self._set_lang_from_menu('en'))
         
         # 弹出位置：溢出按钮下方
-        menu.exec_(self.btn_overflow.mapToGlobal(
-            QtCore.QPoint(0, self.btn_overflow.height())
-        ))
+        menu.exec_(self._overflow_anchor_pos())
+
+    def _overflow_anchor_pos(self):
+        """Return a stable global popup position near the visible overflow button."""
+        anchor = getattr(self, "btn_overflow", None)
+        try:
+            if anchor is not None and anchor.isVisible():
+                return anchor.mapToGlobal(QtCore.QPoint(0, anchor.height()))
+        except RuntimeError:
+            pass
+        return self.mapToGlobal(QtCore.QPoint(max(0, self.width() - 24), 24))
 
     def _open_rules_editor(self):
         """打开用户自定义规则编辑器"""
@@ -320,6 +330,34 @@ class HeaderMixin:
             dlg.exec_()
         except Exception as e:
             print(f"[Header] Failed to open plugin manager: {e}")
+
+    def _open_experience_review(self):
+        """打开工作流经验沉淀审阅中心"""
+        try:
+            from .experience_review_dialog import ExperienceReviewDialog
+            dlg = getattr(self, "_experience_review_dialog", None)
+            try:
+                if dlg is not None and dlg.isVisible():
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    return
+            except RuntimeError:
+                dlg = None
+
+            dlg = ExperienceReviewDialog(self, parent=self)
+            dlg.setModal(False)
+            dlg.setWindowModality(QtCore.Qt.NonModal)
+            dlg.destroyed.connect(lambda *_: setattr(self, "_experience_review_dialog", None))
+            self._experience_review_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                tr('experience.title'),
+                tr('experience.open_failed', e),
+            )
 
     def _on_plugin_state_changed(self):
         """插件状态变化后的回调（重新挂载按钮等）"""
@@ -358,10 +396,17 @@ class HeaderMixin:
     def _retranslate_header(self):
         """语言切换后更新 Header 区域所有翻译文本"""
         self.think_check.setToolTip(tr('header.think.tooltip'))
+        self.web_check.setText(tr("header.web"))
+        self.think_check.setText(tr("header.think"))
         self.btn_cache.setToolTip(tr('header.cache.tooltip'))
         self.btn_optimize.setToolTip(tr('header.optimize.tooltip'))
         self.btn_update.setToolTip(tr('header.update.tooltip'))
         self.btn_font_scale.setToolTip(tr('header.font.tooltip'))
+        self.btn_key.setText(tr('menu.api_key'))
+        self.btn_clear.setText(tr('btn.clear'))
+        self.btn_cache.setText(tr('menu.cache'))
+        self.btn_optimize.setText(tr('menu.optimize'))
+        self.btn_update.setText(tr('menu.update'))
         # 同步下拉框选中项（防止外部调用 set_language 后不同步）
         lang = get_language()
         expected_idx = 0 if lang == 'zh' else 1
@@ -478,7 +523,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
     def __init__(self, current_config: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Custom Model 配置")
+        self.setWindowTitle(tr("custom.title"))
         self.setMinimumWidth(460)
         self.setObjectName("customProviderDialog")
         self._build_ui(current_config)
@@ -490,8 +535,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         # 说明
         info = QtWidgets.QLabel(
-            "配置任何兼容 OpenAI API 协议的服务端点。\n"
-            "例如：LM Studio、vLLM、Text Generation WebUI、其他中转站等。"
+            tr("custom.info")
         )
         info.setWordWrap(True)
         info.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px; margin-bottom: 4px;")
@@ -503,14 +547,14 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         # API URL
         self._url_edit = QtWidgets.QLineEdit()
-        self._url_edit.setPlaceholderText("https://integrate.api.nvidia.com/v1 或 .../v1/chat/completions")
+        self._url_edit.setPlaceholderText(tr("custom.url_placeholder"))
         self._url_edit.setText(cfg.get('api_url', ''))
         self._url_edit.setMinimumHeight(28)
         form.addRow("API URL:", self._url_edit)
 
         # API Key
         self._key_edit = QtWidgets.QLineEdit()
-        self._key_edit.setPlaceholderText("sk-xxxx（留空则不发送 Authorization 头）")
+        self._key_edit.setPlaceholderText(tr("custom.key_placeholder"))
         self._key_edit.setText(cfg.get('api_key', ''))
         self._key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self._key_edit.setMinimumHeight(28)
@@ -544,11 +588,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         self._btn_fetch_models = QtWidgets.QPushButton("⟳")
         self._btn_fetch_models.setFixedSize(28, 28)
-        self._btn_fetch_models.setToolTip("从 API 获取可用模型列表")
+        self._btn_fetch_models.setToolTip(tr("custom.fetch_models"))
         self._btn_fetch_models.clicked.connect(self._fetch_models)
         models_row.addWidget(self._btn_fetch_models)
 
-        form.addRow("模型名:", models_row)
+        form.addRow(tr("custom.models"), models_row)
 
         # 上下文长度
         self._ctx_spin = QtWidgets.QSpinBox()
@@ -557,26 +601,26 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._ctx_spin.setValue(cfg.get('context_limit', 128000))
         self._ctx_spin.setSuffix(" tokens")
         self._ctx_spin.setMinimumHeight(28)
-        form.addRow("上下文长度:", self._ctx_spin)
+        form.addRow(tr("custom.context_length"), self._ctx_spin)
 
         # 特性开关
         features_row = QtWidgets.QHBoxLayout()
         features_row.setSpacing(12)
-        self._chk_vision = QtWidgets.QCheckBox("支持图片输入")
+        self._chk_vision = QtWidgets.QCheckBox(tr("custom.supports_vision"))
         self._chk_vision.setChecked(cfg.get('supports_vision', False))
         features_row.addWidget(self._chk_vision)
-        self._chk_fc = QtWidgets.QCheckBox("支持 Function Calling")
+        self._chk_fc = QtWidgets.QCheckBox(tr("custom.supports_fc"))
         self._chk_fc.setChecked(cfg.get('supports_fc', True))
         features_row.addWidget(self._chk_fc)
         features_row.addStretch()
-        form.addRow("特性:", features_row)
+        form.addRow(tr("custom.features"), features_row)
 
         layout.addLayout(form)
 
         # 测试连接按钮
         test_row = QtWidgets.QHBoxLayout()
         test_row.addStretch()
-        self._btn_test = QtWidgets.QPushButton("测试连接")
+        self._btn_test = QtWidgets.QPushButton(tr("custom.test"))
         self._btn_test.setMinimumWidth(100)
         self._btn_test.setMinimumHeight(28)
         self._btn_test.clicked.connect(self._test_connection)
@@ -591,6 +635,8 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         btn_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
+        btn_box.button(QtWidgets.QDialogButtonBox.Ok).setText(tr("btn.ok"))
+        btn_box.button(QtWidgets.QDialogButtonBox.Cancel).setText(tr("btn.cancel"))
         btn_box.accepted.connect(self._on_accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
@@ -671,12 +717,12 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         key = self._key_edit.text().strip()
 
         if not url:
-            self._test_status.setText("⚠ 请先填写 API URL")
+            self._test_status.setText(tr("custom.need_url"))
             self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
         self._btn_fetch_models.setEnabled(False)
-        self._test_status.setText("获取模型列表中...")
+        self._test_status.setText(tr("custom.fetching_models"))
         self._test_status.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px;")
 
         try:
@@ -693,10 +739,10 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 model_ids = [m.get('id', '') for m in data.get('data', []) if m.get('id')]
                 if model_ids:
                     self._set_model_names(sorted(model_ids))
-                    self._test_status.setText(f"✅ 发现 {len(model_ids)} 个模型")
+                    self._test_status.setText(tr("custom.models_found", len(model_ids)))
                     self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
                 else:
-                    self._test_status.setText("⚠ 未发现可用模型")
+                    self._test_status.setText(tr("custom.no_models"))
                     self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             else:
                 err = resp.text[:120]
@@ -716,14 +762,14 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         model = models[0] if models else 'test'
 
         if not url:
-            self._test_status.setText("⚠ 请先填写 API URL")
+            self._test_status.setText(tr("custom.need_url"))
             self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
         test_url = normalize_custom_chat_url(url)
 
         self._btn_test.setEnabled(False)
-        self._test_status.setText("连接中...")
+        self._test_status.setText(tr("custom.connecting"))
         self._test_status.setStyleSheet(f"color: #aaa; font-size: {ThemeEngine.scaled_px(12)}px;")
 
         try:
@@ -741,7 +787,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             if resp.status_code == 200:
                 data = resp.json()
                 recv_model = data.get('model', model)
-                self._test_status.setText(f"✅ 连接成功（{recv_model}）")
+                self._test_status.setText(tr("custom.connect_ok", recv_model))
                 self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
             else:
                 err = resp.text[:120]
@@ -758,10 +804,10 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         url = self._url_edit.text().strip()
         models = self._model_names()
         if not url:
-            QtWidgets.QMessageBox.warning(self, "提示", "请填写 API URL。")
+            QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_url_plain"))
             return
         if not models:
-            QtWidgets.QMessageBox.warning(self, "提示", "请填写至少一个模型名。")
+            QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_model"))
             return
         self.accept()
 

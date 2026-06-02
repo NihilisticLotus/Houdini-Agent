@@ -69,6 +69,7 @@ from ..utils.memory_store import get_memory_store
 from ..utils.reward_engine import get_reward_engine
 from ..utils.reflection import get_reflection_module
 from ..utils.growth_tracker import get_growth_tracker, TaskMetric
+from ..utils.experience_store import get_experience_store
 
 # ★ Plan 模式
 from ..utils.plan_manager import get_plan_manager, PLAN_TOOL_CREATE, PLAN_TOOL_UPDATE_STEP, PLAN_TOOL_ASK_QUESTION
@@ -181,8 +182,8 @@ class AITab(
         self._reflection_module = None
         self._growth_tracker = None
         self._memory_initialized = False
-        # 全局开关：默认关闭，避免长期记忆把 agent 锁死在某种工作方式上。
-        # 用户在 Header 溢出菜单（···）中可显式启用，状态持久化到 QSettings。
+        # 长期记忆与工作流经验沉淀始终开启。候选经验先进入审阅队列，
+        # 只有用户手动晋升后才写入长期记忆。
         self._memory_enabled = self._load_memory_enabled_pref()
 
         # ★ 睡眠机制计数器
@@ -334,6 +335,10 @@ class AITab(
         self._retranslate_input_area()
         # 会话标签栏
         self._retranslate_session_tabs()
+        for sdata in getattr(self, '_sessions', {}).values():
+            todo = sdata.get('todo_list')
+            if todo and hasattr(todo, 'retranslate'):
+                todo.retranslate()
         print(f"[i18n] UI retranslated for language: {_lang or get_language()}")
 
     # ==========================================================
@@ -353,6 +358,7 @@ class AITab(
                 self._reflection_module = get_reflection_module()
                 self._growth_tracker = get_growth_tracker()
                 self._memory_initialized = True
+                self._save_memory_enabled_pref(True)
                 print(f"[Memory] 长期记忆系统已初始化 (enabled={self._memory_enabled}): "
                       f"{self._memory_store.get_stats()}")
             except Exception as e:
@@ -366,34 +372,38 @@ class AITab(
 
     @staticmethod
     def _load_memory_enabled_pref() -> bool:
-        """从 QSettings 加载记忆开关（默认 False）。"""
+        """长期记忆始终开启，同时覆盖旧版本保存过的关闭状态。"""
         settings = QSettings("HoudiniAI", "Assistant")
-        val = settings.value("memory_enabled", False)
-        if isinstance(val, str):
-            return val.lower() == 'true'
-        return bool(val)
+        settings.setValue("memory_enabled", True)
+        return True
 
     def _save_memory_enabled_pref(self, enabled: bool):
         settings = QSettings("HoudiniAI", "Assistant")
-        settings.setValue("memory_enabled", bool(enabled))
+        settings.setValue("memory_enabled", True)
 
     def _is_memory_active(self) -> bool:
         """记忆相关钩子的统一短路条件。
 
-        True 时才应注入 L0 核心记忆、激活分层检索、反思、睡眠以及
-        暴露 search_memory 工具；False 时完全关闭。
+        True 时注入 L0 核心记忆、激活分层检索、反思、睡眠以及
+        暴露 search_memory 工具。启动初始化完成后该状态会保持开启。
         """
         return bool(self._memory_enabled and self._memory_initialized and self._memory_store)
 
     def set_memory_enabled(self, enabled: bool):
-        """切换记忆系统全局开关并持久化。"""
-        enabled = bool(enabled)
+        """保持记忆系统开启。保留入口是为了兼容旧菜单和旧调用。"""
+        requested_enabled = bool(enabled)
+        enabled = True
         if enabled == self._memory_enabled:
+            if not requested_enabled:
+                try:
+                    self._addStatus.emit(tr('memory.toggle.disabled'))
+                except Exception:
+                    pass
             return
         self._memory_enabled = enabled
         self._save_memory_enabled_pref(enabled)
         # 状态栏提示
-        key = 'memory.toggle.enabled' if enabled else 'memory.toggle.disabled'
+        key = 'memory.toggle.enabled' if requested_enabled else 'memory.toggle.disabled'
         try:
             self._addStatus.emit(tr(key))
         except Exception:
@@ -664,6 +674,29 @@ class AITab(
             print(f"[Memory] 反思钩子异常: {e}")
             traceback.print_exc()
 
+    def _queue_workflow_experience_candidate(self, session_id: str, history: list):
+        """Always-on workflow experience capture.
+
+        This only creates review candidates. Promotion remains an explicit
+        review action so raw reasoning does not get written directly to memory.
+        """
+        try:
+            cand = get_experience_store().create_from_history(session_id, history)
+            if not cand:
+                return
+            print(
+                f"[Experience] candidate queued: {cand.id} "
+                f"status={cand.status} quality={cand.quality_score:.2f}"
+            )
+            try:
+                dlg = getattr(self, "_experience_review_dialog", None)
+                if dlg is not None and dlg.isVisible():
+                    invoke_on_main(dlg, "_reload")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Experience] 自动沉淀失败: {e}")
+
     def _get_personality_injection(self) -> str:
         """获取个性注入文本（附加到 system prompt 末尾）"""
         if not self._is_memory_active() or not self._growth_tracker:
@@ -696,6 +729,12 @@ class AITab(
         base_prompt = f"""You are a Houdini assistant, expert at solving problems with nodes and VEX.
 {lang_rule}
 Never use emoji or icon symbols in replies unless the user explicitly requests them. Use plain text only.
+
+First Principles Rule (mandatory, highest priority):
+-You MUST reason from first principles before choosing an action: identify the user's real goal, the fundamental Houdini/data constraints, the current observed facts, and the smallest reliable mechanism that can satisfy the goal.
+-Do NOT rely on memorized recipes, surface analogies, or habitual node chains when they conflict with observed scene state or tool results.
+-Before modifying a scene, reduce the task to verifiable primitives: geometry representation, attributes, topology, node context, parameter semantics, execution order, and expected observable outcome.
+-When a result is wrong or uncertain, return to first principles: inspect the actual network/parameters/code, isolate the violated assumption, then choose the minimal corrective step.
 """
         if with_thinking:
             base_prompt += f"""
@@ -705,15 +744,17 @@ Even brief confirmations or status updates must start with <think> before the ma
 Omitting the <think> tag is a format violation and is unacceptable.
 
 Deep Thinking Framework (MUST follow inside <think> tags, no steps may be skipped):
-1.[Understand] What does the user truly want? Are there implicit needs beyond the literal request? Don't stop at the surface.
-2.[Status] What is the current scene state? What did the last tool return? Does the result match expectations? Any anomalies or gaps?
-3.[Options] List at least 2 viable approaches and compare pros/cons. If only one exists, explain why there are no alternatives.
-4.[Decision] Choose the optimal approach and explicitly state the reasoning.
-5.[Plan] List concrete execution steps, tools to call, and their order.
-6.[Risk] What could go wrong? How to handle it if it does?
+1.[First Principles] What are the fundamental facts, constraints, primitives, and measurable success criteria? Which assumptions must be verified?
+2.[Understand] What does the user truly want? Are there implicit needs beyond the literal request? Don't stop at the surface.
+3.[Status] What is the current scene state? What did the last tool return? Does the result match expectations? Any anomalies or gaps?
+4.[Options] List at least 2 viable approaches and compare pros/cons. If only one exists, explain why there are no alternatives.
+5.[Decision] Choose the optimal approach and explicitly state the reasoning.
+6.[Plan] List concrete execution steps, tools to call, and their order.
+7.[Risk] What could go wrong? How to handle it if it does?
 
 Thinking Principles:
 -Do NOT rush to act. First fully understand the existing network structure before deciding how to modify it.
+-Always start from first principles: goal, constraints, observed facts, primitives, and validation criteria.
 -If unsure about node types, parameter names, or connections, you MUST query with tools first. Never guess.
 -After each tool result, evaluate quality: Did it succeed? Is the return value reasonable? If unexpected, analyze why and adjust the plan.
 -Better to query one extra time than to redo work due to wrong assumptions.
@@ -730,6 +771,7 @@ Content outside think tags is the formal reply shown to the user — keep it con
 
 Example (deep thinking + plain text reply):
 <think>
+[First Principles] Need points on a surface and instances copied to those points. Core primitives: source geometry, generated points, template geometry, correct copytopoints input order, and visual verification.
 [Understand] User wants to scatter points on a ground plane and copy small spheres. Implicit need: uniform distribution, appropriate sphere size.
 [Status] /obj/geo1 is currently empty, need to build from scratch.
 [Options]
@@ -743,6 +785,7 @@ Created box->scatter->copytopoints pipeline, 500 points, sphere radius 0.05.
 
 Example (follow-up reply after tool execution, MUST still have think tag):
 <think>
+[First Principles] Need to modify point positions. Core primitive is @P on points; success means visible terrain displacement without topology corruption.
 [Status] Previous step created grid node, returned path /obj/geo1/grid1, status normal.
 [Plan] Next, add a wrangle node for terrain noise displacement. Code needs @P.y += noise(@P * freq) structure, run_over = Points (operating on point attribute @P).
 [Risk] Noise frequency and amplitude need reasonable values. Start with freq=2, amp=0.5 as defaults, user can adjust later.
@@ -982,7 +1025,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         self.btn_send.clicked.connect(self._on_send)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_key.clicked.connect(self._on_set_key)
-        self.btn_clear.clicked.connect(self._on_clear)
+        self.btn_clear.clicked.connect(self._on_clear_requested)
+        self.btn_clear_chat.clicked.connect(self._on_clear_requested)
         self.btn_cache.clicked.connect(self._on_cache_menu)
         self.btn_optimize.clicked.connect(self._on_optimize_menu)
         self.btn_network.clicked.connect(self._on_read_network)
@@ -1489,6 +1533,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             # ★ 内容开始流入 → 隐藏 "Generating..." 状态（如果正在显示）
             if hasattr(self, 'thinking_bar') and getattr(self.thinking_bar, '_mode', None) == 'generating':
                 self.thinking_bar.stop()
+            if getattr(resp, '_has_thinking', False) and not resp.thinking_section._finalized:
+                resp.thinking_section.finalize()
             resp.append_content(text)
             self._scroll_agent_to_bottom(force=False)
         except RuntimeError:
@@ -1974,7 +2020,16 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             if sys_shells:
                 final_msg['system_shells'] = sys_shells
             history.append(final_msg)
-        
+
+        # 工作流经验候选自动沉淀：只进入审阅队列，不直接晋升。
+        agent_sid = self._agent_session_id or self._session_id
+        if history and agent_sid:
+            history_snapshot = [m.copy() for m in history]
+            def _do_experience_capture():
+                self._queue_workflow_experience_candidate(agent_sid, history_snapshot)
+            exp_thread = threading.Thread(target=_do_experience_capture, daemon=True)
+            exp_thread.start()
+
         # 管理上下文
         self._manage_context()
         
@@ -5060,8 +5115,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         names = {'openai': 'OpenAI', 'deepseek': 'DeepSeek', 'glm': 'GLM（智谱AI）', 'ollama': 'Ollama', 'openrouter': 'OpenRouter'}
         
         key, ok = QtWidgets.QInputDialog.getText(
-            self, f"Set {names.get(provider, provider)} API Key",
-            "Enter API Key:",
+            self, tr("key.title", names.get(provider, provider)),
+            tr("key.prompt"),
             QtWidgets.QLineEdit.Password
         )
         
@@ -5069,7 +5124,35 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             self.client.set_api_key(key.strip(), persist=True, provider=provider)
             self._update_key_status()
 
+    def _on_clear_requested(self):
+        has_content = bool(
+            self._conversation_history
+            or self._context_summary
+            or self._pending_ops
+            or self._call_records
+        )
+        if not has_content and not (
+            self._agent_session_id == self._session_id and self._agent_session_id is not None
+        ):
+            self._show_toast(tr("clear.empty"), 1600)
+            return
+
+        running_current = (
+            self._agent_session_id == self._session_id and self._agent_session_id is not None
+        )
+        msg = tr("clear.confirm_running_msg") if running_current else tr("clear.confirm_msg")
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            tr("clear.confirm_title"),
+            msg,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret == QtWidgets.QMessageBox.Yes:
+            self._on_clear()
+
     def _on_clear(self):
+        old_session_id = self._session_id
         # ── 如果当前 session 正在运行 agent，先停止 ──
         if self._agent_session_id == self._session_id and self._agent_session_id is not None:
             # 1) 请求后端线程停止
@@ -5106,30 +5189,49 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         # 旧 todo_list 已被 deleteLater, 创建新的
         self.todo_list = self._create_todo_list(self.chat_container)
-        if self._session_id in self._sessions:
-            self._sessions[self._session_id]['todo_list'] = self.todo_list
+        new_session_id = str(uuid.uuid4())[:8]
+        session_state = self._sessions.pop(old_session_id, {})
+        self._session_id = new_session_id
+        if session_state:
+            session_state['todo_list'] = self.todo_list
+            self._sessions[new_session_id] = session_state
+        else:
+            self._sessions[new_session_id] = {
+                'scroll_area': self.scroll_area,
+                'chat_container': self.chat_container,
+                'chat_layout': self.chat_layout,
+                'todo_list': self.todo_list,
+                'conversation_history': [],
+                'context_summary': '',
+                'current_response': None,
+                'token_stats': self._token_stats,
+            }
         
         # 同步到 sessions 字典
         self._save_current_session_state()
         
         # ★ 清空后删除磁盘上的旧 session 文件（防止残留数据在重启后被恢复）
         try:
-            old_session_file = self._cache_dir / f"session_{self._session_id}.json"
+            old_session_file = self._cache_dir / f"session_{old_session_id}.json"
             if old_session_file.exists():
                 old_session_file.unlink()
+            new_session_file = self._cache_dir / f"session_{new_session_id}.json"
+            if new_session_file.exists():
+                new_session_file.unlink()
         except Exception:
             pass
-        # ★ 立即更新 manifest（移除已清空的会话条目）
+        # 重置标签名
+        for i in range(self.session_tabs.count()):
+            if self.session_tabs.tabData(i) == old_session_id:
+                self.session_tabs.setTabData(i, new_session_id)
+                self.session_tabs.setTabText(i, tr("session.default_label", self._session_counter))
+                break
+        self._sync_tabs_backup()
+        # ★ 立即更新 manifest（旧会话 ID 已从标签与缓存中移除）
         try:
             self._update_manifest()
         except Exception:
             pass
-        
-        # 重置标签名
-        for i in range(self.session_tabs.count()):
-            if self.session_tabs.tabData(i) == self._session_id:
-                self.session_tabs.setTabText(i, f"Chat {self._session_counter}")
-                break
         
         # 更新统计显示
         self._update_token_stats_display()
@@ -5857,8 +5959,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         auto_save_action.setChecked(self._auto_save_cache)
         auto_save_action.triggered.connect(lambda: setattr(self, '_auto_save_cache', not self._auto_save_cache))
         
-        # 显示菜单
-        menu.exec_(self.btn_cache.mapToGlobal(QtCore.QPoint(0, self.btn_cache.height())))
+        # 显示菜单：btn_cache 是隐藏兼容按钮，必须使用可见 overflow 按钮定位
+        menu.exec_(self._overflow_anchor_pos())
     
     @staticmethod
     def _strip_images_for_cache(history: list) -> list:
@@ -5966,7 +6068,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             
             tabs_info = getattr(self, '_tabs_backup', [])
             if not tabs_info:
-                tabs_info = [(sid, f"Chat") for sid in self._sessions]
+                tabs_info = [(sid, tr("session.default_label", i + 1)) for i, sid in enumerate(self._sessions)]
             
             manifest_tabs = []
             for sid, tab_label in tabs_info:
@@ -6229,7 +6331,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
             for tab_info in tabs_info:
                 sid = tab_info.get('session_id', '')
-                tab_label = tab_info.get('tab_label', 'Chat')
+                tab_label = tab_info.get('tab_label', tr("session.default_label", 1))
                 is_empty = tab_info.get('empty', False)
 
                 history = []
@@ -6505,7 +6607,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             self.session_stack.addWidget(scroll_area)
             
             # 用缓存文件名或首条用户消息作为标签名
-            label = f"Chat {self._session_counter}"
+            label = tr("session.default_label", self._session_counter)
             for msg in history:
                 if msg.get('role') == 'user' and msg.get('content'):
                     short = msg['content'][:18].replace('\n', ' ').strip()
@@ -7429,8 +7531,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             action.setChecked(self._optimization_strategy == strat)
             action.triggered.connect(lambda _, s=strat: setattr(self, '_optimization_strategy', s))
         
-        # 显示菜单
-        menu.exec_(self.btn_optimize.mapToGlobal(QtCore.QPoint(0, self.btn_optimize.height())))
+        # 显示菜单：btn_optimize 是隐藏兼容按钮，必须使用可见 overflow 按钮定位
+        menu.exec_(self._overflow_anchor_pos())
     
     def _optimize_now(self):
         """立即优化当前对话"""

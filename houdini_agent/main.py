@@ -19,6 +19,7 @@ def _reload_modules():
         'houdini_agent.utils.hooks',
         'houdini_agent.utils.tool_registry',
         'houdini_agent.utils.rules_manager',
+        'houdini_agent.utils.experience_store',
         'houdini_agent.utils.ai_client',
         'houdini_agent.utils.mcp.client',
         'houdini_agent.utils.mcp',
@@ -26,6 +27,7 @@ def _reload_modules():
         'houdini_agent.ui.cursor_widgets',
         # ★ 新增：拆分出的 mixin 模块也需要重载，否则引用旧类导致异常
         'houdini_agent.ui.font_settings_dialog',
+        'houdini_agent.ui.experience_review_dialog',
         'houdini_agent.ui.header',
         'houdini_agent.ui.input_area',
         'houdini_agent.ui.chat_view',
