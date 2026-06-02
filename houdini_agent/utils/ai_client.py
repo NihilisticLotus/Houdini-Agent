@@ -1430,6 +1430,9 @@ class AIClient:
     # Custom provider 运行时配置
     _CUSTOM_API_URL: str = ''
     _CUSTOM_SUPPORTS_FC: bool = True
+    _CUSTOM_PROFILES: List[Dict[str, Any]] = []
+    _CUSTOM_MODEL_ROUTES: Dict[str, Dict[str, Any]] = {}
+    _CUSTOM_MODEL_NAMES: Dict[str, str] = {}
 
     def __init__(self, api_key: Optional[str] = None):
         self._api_keys: Dict[str, Optional[str]] = {
@@ -2352,11 +2355,32 @@ class AIClient:
             return True
         # Custom: 只要配置了 URL 就算可用（Key 可选）
         if provider == 'custom':
-            return bool(self._CUSTOM_API_URL)
+            return bool(self._CUSTOM_API_URL or self._CUSTOM_PROFILES)
         return bool(self._api_keys.get(provider))
 
-    def _get_api_key(self, provider: str) -> Optional[str]:
-        return self._api_keys.get((provider or 'openai').lower())
+    def _get_custom_profile(self, model: str = '') -> Dict[str, Any]:
+        if model:
+            profile = self._CUSTOM_MODEL_ROUTES.get(model)
+            if profile:
+                return profile
+        if self._CUSTOM_PROFILES:
+            return self._CUSTOM_PROFILES[0]
+        return {
+            'api_url': self._CUSTOM_API_URL,
+            'api_key': self._api_keys.get('custom') or '',
+            'supports_fc': self._CUSTOM_SUPPORTS_FC,
+            'models': [],
+        }
+
+    def _get_custom_model_name(self, model: str = '') -> str:
+        return self._CUSTOM_MODEL_NAMES.get(model, model)
+
+    def _get_api_key(self, provider: str, model: str = '') -> Optional[str]:
+        provider = (provider or 'openai').lower()
+        if provider == 'custom':
+            profile = self._get_custom_profile(model)
+            return profile.get('api_key') or self._api_keys.get('custom')
+        return self._api_keys.get(provider)
 
     def set_api_key(self, key: str, persist: bool = False, provider: str = 'openai') -> bool:
         provider = (provider or 'openai').lower()
@@ -2381,14 +2405,16 @@ class AIClient:
             return 'Local'
         # Custom: 显示 URL 缩略
         if provider == 'custom':
-            if self._CUSTOM_API_URL:
-                url = self._CUSTOM_API_URL
+            profile = self._get_custom_profile()
+            url = profile.get('api_url') or self._CUSTOM_API_URL
+            if url:
                 # 提取域名部分作为显示
                 try:
                     from urllib.parse import urlparse
                     parsed = urlparse(url)
                     host = parsed.hostname or url[:20]
-                    return host[:16] + ('...' if len(host) > 16 else '')
+                    suffix = f" +{len(self._CUSTOM_PROFILES) - 1}" if len(self._CUSTOM_PROFILES) > 1 else ""
+                    return host[:16] + ('...' if len(host) > 16 else '') + suffix
                 except Exception:
                     return url[:16] + '...'
             return 'Not Set'
@@ -2418,7 +2444,8 @@ class AIClient:
         elif provider == 'openrouter':
             return self.OPENROUTER_API_URL
         elif provider == 'custom':
-            raw = self._CUSTOM_API_URL or self.OPENAI_API_URL
+            profile = self._get_custom_profile(model)
+            raw = profile.get('api_url') or self._CUSTOM_API_URL or self.OPENAI_API_URL
             return normalize_custom_chat_url(raw)
         return self.OPENAI_API_URL
 
@@ -2431,18 +2458,72 @@ class AIClient:
         }
         return names.get(provider, provider)
 
-    def set_custom_provider(self, api_url: str, api_key: str = '', supports_fc: bool = True):
+    def set_custom_provider(self, api_url: str, api_key: str = '', supports_fc: bool = True,
+                            profiles: Optional[List[Dict[str, Any]]] = None):
         """设置 Custom Provider 的运行时配置
 
         Args:
             api_url: OpenAI 兼容的 API 端点 URL
             api_key: API Key（可为空）
             supports_fc: 是否支持原生 Function Calling
+            profiles: 多组 Custom 配置，每组可包含独立 URL / API Key / 模型列表
         """
-        self._CUSTOM_API_URL = normalize_custom_chat_url(api_url)
-        self._CUSTOM_SUPPORTS_FC = supports_fc
-        if api_key:
-            self._api_keys['custom'] = api_key.strip()
+        normalized_profiles: List[Dict[str, Any]] = []
+        for idx, profile in enumerate(profiles or [], start=1):
+            if not isinstance(profile, dict):
+                continue
+            models = profile.get('models') or []
+            if isinstance(models, str):
+                models = [m.strip() for m in re.split(r'[,;\n]+', models) if m.strip()]
+            else:
+                models = [str(m).strip() for m in models if str(m).strip()]
+            try:
+                context_limit = int(profile.get('context_limit') or 128000)
+            except (TypeError, ValueError):
+                context_limit = 128000
+            normalized_profiles.append({
+                'name': str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}',
+                'api_url': normalize_custom_chat_url(profile.get('api_url', '')),
+                'api_key': str(profile.get('api_key') or '').strip(),
+                'models': models,
+                'context_limit': context_limit,
+                'supports_vision': bool(profile.get('supports_vision', False)),
+                'supports_fc': bool(profile.get('supports_fc', supports_fc)),
+            })
+        if not normalized_profiles:
+            normalized_profiles = [{
+                'name': 'Custom 1',
+                'api_url': normalize_custom_chat_url(api_url),
+                'api_key': (api_key or '').strip(),
+                'models': [],
+                'context_limit': 128000,
+                'supports_vision': False,
+                'supports_fc': supports_fc,
+            }]
+
+        self._CUSTOM_PROFILES = normalized_profiles
+        self._CUSTOM_MODEL_ROUTES = {}
+        self._CUSTOM_MODEL_NAMES = {}
+        model_counts: Dict[str, int] = {}
+        for profile in normalized_profiles:
+            for model in profile.get('models', []):
+                model_counts[model] = model_counts.get(model, 0) + 1
+
+        for profile in normalized_profiles:
+            profile_name = profile.get('name', 'Custom')
+            for model in profile.get('models', []):
+                label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
+                self._CUSTOM_MODEL_ROUTES[label] = profile
+                self._CUSTOM_MODEL_NAMES[label] = model
+                self._CUSTOM_MODEL_ROUTES.setdefault(model, profile)
+                self._CUSTOM_MODEL_NAMES.setdefault(model, model)
+
+        primary = normalized_profiles[0]
+        self._CUSTOM_API_URL = primary.get('api_url', '')
+        self._CUSTOM_SUPPORTS_FC = primary.get('supports_fc', supports_fc)
+        primary_key = primary.get('api_key') or (api_key or '').strip()
+        if primary_key:
+            self._api_keys['custom'] = primary_key
     
     def set_ollama_url(self, base_url: str):
         """设置 Ollama 服务地址"""
@@ -2517,7 +2598,8 @@ class AIClient:
             except Exception as e:
                 return {'ok': False, 'error': f'无法连接 Ollama 服务: {str(e)}'}
         
-        api_key = self._get_api_key(provider)
+        default_model = self._get_default_model(provider)
+        api_key = self._get_api_key(provider, default_model)
         # Custom provider 允许无 API Key（本地服务等）
         if not api_key and provider != 'custom':
             return {'ok': False, 'error': f'缺少 API Key'}
@@ -2528,17 +2610,22 @@ class AIClient:
                 if api_key:
                     headers['Authorization'] = f'Bearer {api_key}'
                 response = self._http_session.post(
-                    self._get_api_url(provider),
-                    json={'model': self._get_default_model(provider), 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1},
+                    self._get_api_url(provider, default_model),
+                    json={'model': default_model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1},
                     headers=headers,
                     timeout=15,
                     proxies={'http': None, 'https': None}
                 )
-                return {'ok': True, 'url': self._get_api_url(provider), 'status': response.status_code}
+                return {'ok': True, 'url': self._get_api_url(provider, default_model), 'status': response.status_code}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
     def _get_default_model(self, provider: str) -> str:
+        if (provider or '').lower() == 'custom':
+            profile = self._get_custom_profile()
+            models = profile.get('models') or []
+            if models:
+                return models[0]
         defaults = {
             'openai': 'gpt-5.2', 
             'deepseek': 'deepseek-v4-flash',
@@ -3232,7 +3319,7 @@ class AIClient:
             return
         
         provider = (provider or 'openai').lower()
-        api_key = self._get_api_key(provider)
+        api_key = self._get_api_key(provider, model)
         
         # Ollama / Custom（无 Key）不需要 API Key 验证
         if provider not in ('ollama', 'custom') and not api_key:
@@ -3250,9 +3337,10 @@ class AIClient:
             return
         
         api_url = self._get_api_url(provider, model)
+        request_model = self._get_custom_model_name(model) if provider == 'custom' else model
         
         payload = {
-            'model': model,
+            'model': request_model,
             'messages': messages,
             'temperature': temperature,
             'stream': True,
@@ -3651,12 +3739,14 @@ class AIClient:
             return {'ok': False, 'error': '需要安装 requests 库'}
 
         provider = (provider or 'openai').lower()
-        api_key = self._get_api_key(provider)
+        api_key = self._get_api_key(provider, model)
         if not api_key and provider not in ('ollama', 'custom'):
             return {'ok': False, 'error': f'缺少 API Key'}
 
+        request_model = self._get_custom_model_name(model) if provider == 'custom' else model
+
         payload = {
-            'model': model,
+            'model': request_model,
             'messages': messages,
             'temperature': temperature,
         }
@@ -4635,7 +4725,8 @@ class AIClient:
             return False
         # Custom provider 根据用户配置决定
         if provider == 'custom':
-            return self._CUSTOM_SUPPORTS_FC
+            profile = self._get_custom_profile(model)
+            return bool(profile.get('supports_fc', self._CUSTOM_SUPPORTS_FC))
         # 其他云端模型都支持
         return True
     

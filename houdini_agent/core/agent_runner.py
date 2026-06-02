@@ -152,6 +152,8 @@ class AgentRunnerMixin:
         sdata = self._sessions.get(session_id)
         if not sdata:
             return
+        if sdata.get('manual_title'):
+            return
         if sdata.get('_ai_title_generated'):
             return
         
@@ -214,9 +216,15 @@ class AgentRunnerMixin:
         """AI 标题生成完成 — 更新 tab 标签"""
         if not title:
             return
+        sdata = self._sessions.get(session_id)
+        if sdata and sdata.get('manual_title'):
+            return
         for i in range(self.session_tabs.count()):
             if self.session_tabs.tabData(i) == session_id:
-                self.session_tabs.setTabText(i, title)
+                if hasattr(self, '_set_session_tab_title'):
+                    self._set_session_tab_title(session_id, title, manual=False)
+                else:
+                    self.session_tabs.setTabText(i, title)
                 break
 
     # ---------- 确认模式 — 内联预览确认 ----------

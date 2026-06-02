@@ -47,19 +47,23 @@ class SessionManagerMixin:
         return container
     
     def _on_tab_context_menu(self, pos):
-        """Tab 栏右键菜单：关闭 / 关闭其他"""
+        """Tab 栏右键菜单：重命名 / 关闭 / 关闭其他"""
         tab_index = self.session_tabs.tabAt(pos)
         if tab_index < 0:
             return
         menu = QtWidgets.QMenu(self)
         # QMenu 样式由全局 QSS 控制
+        rename_action = menu.addAction(tr('session.rename'))
+        menu.addSeparator()
         close_action = menu.addAction(tr('session.close'))
         close_others = menu.addAction(tr('session.close_others'))
         if self.session_tabs.count() <= 1:
             close_others.setEnabled(False)
 
         chosen = menu.exec_(self.session_tabs.mapToGlobal(pos))
-        if chosen == close_action:
+        if chosen == rename_action:
+            self._rename_session_tab(tab_index)
+        elif chosen == close_action:
             self._close_session_tab(tab_index)
         elif chosen == close_others:
             # 从后往前关闭，跳过当前 tab
@@ -120,6 +124,7 @@ class SessionManagerMixin:
             'context_summary': self._context_summary,
             'current_response': self._current_response,
             'token_stats': self._token_stats,
+            'manual_title': False,
         }
         self._sync_tabs_backup()
     
@@ -185,6 +190,7 @@ class SessionManagerMixin:
             'context_summary': '',
             'current_response': None,
             'token_stats': new_token_stats,
+            'manual_title': False,
         }
         
         # 切换到新会话
@@ -286,6 +292,55 @@ class SessionManagerMixin:
         s['context_summary'] = self._context_summary
         s['current_response'] = self._current_response
         s['token_stats'] = self._token_stats
+
+    def _clean_tab_label(self, label: str) -> str:
+        prefix = getattr(self, '_TAB_RUNNING_PREFIX', '')
+        if prefix and label.startswith(prefix):
+            return label[len(prefix):]
+        return label
+
+    def _set_session_tab_title(self, session_id: str, title: str, manual: bool = False):
+        """Set a session tab title while preserving the running indicator."""
+        title = (title or '').strip()
+        if not session_id or not title:
+            return
+        sdata = self._sessions.get(session_id)
+        if sdata is not None:
+            sdata['manual_title'] = bool(manual or sdata.get('manual_title', False))
+        prefix = getattr(self, '_TAB_RUNNING_PREFIX', '')
+        for i in range(self.session_tabs.count()):
+            if self.session_tabs.tabData(i) == session_id:
+                current = self.session_tabs.tabText(i)
+                display = prefix + title if prefix and current.startswith(prefix) else title
+                self.session_tabs.setTabText(i, display)
+                break
+        self._sync_tabs_backup()
+        try:
+            self._update_manifest()
+        except Exception:
+            pass
+
+    def _rename_session_tab(self, tab_index: int):
+        """Manually rename a session tab."""
+        session_id = self.session_tabs.tabData(tab_index)
+        if not session_id:
+            return
+        current_title = self._clean_tab_label(self.session_tabs.tabText(tab_index))
+        title, ok = QtWidgets.QInputDialog.getText(
+            self,
+            tr('session.rename_title'),
+            tr('session.rename_prompt'),
+            QtWidgets.QLineEdit.Normal,
+            current_title,
+        )
+        if not ok:
+            return
+        title = title.strip()
+        if not title:
+            return
+        if len(title) > 32:
+            title = title[:32].rstrip() + '...'
+        self._set_session_tab_title(session_id, title, manual=True)
     
     def _sync_tabs_backup(self):
         """同步 tab 顺序和标签名到纯 Python 备份（atexit 时 Qt widget 可能已销毁）"""
@@ -293,9 +348,10 @@ class SessionManagerMixin:
             backup = []
             for i in range(self.session_tabs.count()):
                 sid = self.session_tabs.tabData(i)
-                label = self.session_tabs.tabText(i)
+                label = self._clean_tab_label(self.session_tabs.tabText(i))
                 if sid:
-                    backup.append((sid, label))
+                    manual = bool(self._sessions.get(sid, {}).get('manual_title', False))
+                    backup.append((sid, label, manual))
             self._tabs_backup = backup
         except (RuntimeError, AttributeError):
             pass  # Qt widget 已销毁，保留旧备份
@@ -322,14 +378,16 @@ class SessionManagerMixin:
     
     def _auto_rename_tab(self, text: str):
         """根据用户首条消息自动重命名当前标签"""
+        if self._sessions.get(self._session_id, {}).get('manual_title'):
+            return
         for i in range(self.session_tabs.count()):
             if self.session_tabs.tabData(i) == self._session_id:
-                current_label = self.session_tabs.tabText(i)
+                current_label = self._clean_tab_label(self.session_tabs.tabText(i))
                 if current_label.startswith("Chat ") or current_label.startswith("对话 "):
                     short = text[:18].replace('\n', ' ').strip()
                     if len(text) > 18:
                         short += "..."
-                    self.session_tabs.setTabText(i, short)
+                    self._set_session_tab_title(self._session_id, short, manual=False)
                 break
 
     def _retranslate_session_tabs(self):
@@ -338,6 +396,9 @@ class SessionManagerMixin:
         for i in range(self.session_tabs.count()):
             label = self.session_tabs.tabText(i)
             clean = label[len(self._TAB_RUNNING_PREFIX):] if hasattr(self, '_TAB_RUNNING_PREFIX') and label.startswith(self._TAB_RUNNING_PREFIX) else label
+            sid = self.session_tabs.tabData(i)
+            if sid and self._sessions.get(sid, {}).get('manual_title'):
+                continue
             parts = clean.split()
             if len(parts) == 2 and parts[0] in ("Chat", "对话") and parts[1].isdigit():
                 new_label = tr("session.default_label", int(parts[1]))

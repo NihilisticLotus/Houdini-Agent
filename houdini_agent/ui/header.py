@@ -6,10 +6,69 @@ Header UI 构建 — 顶部设置栏（模型选择、Provider、Web/Think 开�
 样式由全局 style_template.qss 通过 objectName 选择器控制。
 """
 
+import json
+
 from houdini_agent.qt_compat import QtWidgets, QtCore
 from houdini_agent.utils.ai_client import normalize_custom_chat_url, normalize_custom_models_url
 from .i18n import tr, get_language, set_language, language_changed
 from .theme_engine import ThemeEngine
+
+
+def _split_custom_models(models_text: str) -> list:
+    chunks = (models_text or '').replace('\n', ',').replace(';', ',').split(',')
+    models = []
+    seen = set()
+    for chunk in chunks:
+        model = chunk.strip()
+        if model and model not in seen:
+            models.append(model)
+            seen.add(model)
+    return models
+
+
+def _normalize_custom_profiles(profiles: list) -> list:
+    normalized = []
+    for idx, profile in enumerate(profiles or [], start=1):
+        if not isinstance(profile, dict):
+            continue
+        name = str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}'
+        models = profile.get('models') or []
+        if isinstance(models, str):
+            models = _split_custom_models(models)
+        else:
+            models = [str(m).strip() for m in models if str(m).strip()]
+        try:
+            context_limit = int(profile.get('context_limit') or 128000)
+        except (TypeError, ValueError):
+            context_limit = 128000
+        normalized.append({
+            'name': name,
+            'api_url': str(profile.get('api_url') or '').strip(),
+            'api_key': str(profile.get('api_key') or '').strip(),
+            'models': models,
+            'context_limit': context_limit,
+            'supports_vision': bool(profile.get('supports_vision', False)),
+            'supports_fc': bool(profile.get('supports_fc', True)),
+        })
+    return normalized
+
+
+def _flatten_custom_models(profiles: list) -> list:
+    counts = {}
+    for profile in profiles or []:
+        for model in profile.get('models', []):
+            counts[model] = counts.get(model, 0) + 1
+
+    models = []
+    seen = set()
+    for profile in profiles or []:
+        profile_name = profile.get('name', 'Custom')
+        for model in profile.get('models', []):
+            label = f"{profile_name} / {model}" if counts.get(model, 0) > 1 else model
+            if label and label not in seen:
+                models.append(label)
+                seen.add(label)
+    return models
 
 
 class HeaderMixin:
@@ -100,6 +159,7 @@ class HeaderMixin:
             'context_limit': 128000,
             'supports_vision': False,
             'supports_fc': True,    # 是否支持 Function Calling
+            'profiles': [],
         }
         self._load_custom_provider_config()
         self._model_context_limits = {
@@ -187,6 +247,7 @@ class HeaderMixin:
             'qwen/qwen3-235b-a22b':               {'supports_prompt_caching': True, 'supports_vision': False},
             'mistralai/mistral-large-2512':       {'supports_prompt_caching': True, 'supports_vision': True},
         }
+        self._register_custom_model_features(self._custom_provider_config.get('profiles', []))
         self._refresh_models('ollama')
         self.model_combo.setMinimumWidth(100)
         self.model_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -260,6 +321,21 @@ class HeaderMixin:
         self.lang_combo.setVisible(False)
         
         return header
+
+    def _register_custom_model_features(self, profiles: list):
+        model_counts = {}
+        for profile in profiles or []:
+            for model in profile.get('models', []):
+                model_counts[model] = model_counts.get(model, 0) + 1
+        for profile in profiles or []:
+            profile_name = profile.get('name', 'Custom')
+            for model in profile.get('models', []):
+                label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
+                self._model_context_limits[label] = profile.get('context_limit', 128000)
+                self._model_features[label] = {
+                    'supports_prompt_caching': True,
+                    'supports_vision': profile.get('supports_vision', False),
+                }
 
     def _show_overflow_menu(self):
         """显示溢出菜单：低频功能集中在此"""
@@ -425,18 +501,42 @@ class HeaderMixin:
             from shared.common_utils import load_config
             cfg, _ = load_config('ai', dcc_type='houdini')
             if cfg:
-                self._custom_provider_config['api_url'] = cfg.get('custom_api_url', '')
-                self._custom_provider_config['api_key'] = cfg.get('custom_api_key', '')
+                profiles = []
+                profiles_raw = cfg.get('custom_profiles', '')
+                if profiles_raw:
+                    try:
+                        profiles = json.loads(profiles_raw)
+                    except Exception as e:
+                        print(f"[Header] Failed to parse custom_profiles: {e}")
+
                 models_str = cfg.get('custom_models', '')
+                legacy_models = []
                 if models_str:
-                    model_chunks = models_str.replace('\n', ',').replace(';', ',').split(',')
-                    self._custom_provider_config['models'] = [m.strip() for m in model_chunks if m.strip()]
+                    legacy_models = _split_custom_models(models_str)
                 try:
-                    self._custom_provider_config['context_limit'] = int(cfg.get('custom_context_limit', '128000'))
+                    legacy_context_limit = int(cfg.get('custom_context_limit', '128000'))
                 except (ValueError, TypeError):
-                    pass
-                self._custom_provider_config['supports_vision'] = cfg.get('custom_supports_vision', 'false').lower() == 'true'
-                self._custom_provider_config['supports_fc'] = cfg.get('custom_supports_fc', 'true').lower() != 'false'
+                    legacy_context_limit = 128000
+
+                legacy_profile = {
+                    'name': cfg.get('custom_profile_name', 'Custom 1'),
+                    'api_url': cfg.get('custom_api_url', ''),
+                    'api_key': cfg.get('custom_api_key', ''),
+                    'models': legacy_models,
+                    'context_limit': legacy_context_limit,
+                    'supports_vision': cfg.get('custom_supports_vision', 'false').lower() == 'true',
+                    'supports_fc': cfg.get('custom_supports_fc', 'true').lower() != 'false',
+                }
+                normalized_profiles = _normalize_custom_profiles(profiles)
+                if not normalized_profiles and (legacy_profile['api_url'] or legacy_profile['models']):
+                    normalized_profiles = _normalize_custom_profiles([legacy_profile])
+                if not normalized_profiles:
+                    normalized_profiles = _normalize_custom_profiles([legacy_profile])
+
+                primary = normalized_profiles[0]
+                self._custom_provider_config.update(primary)
+                self._custom_provider_config['profiles'] = normalized_profiles
+                self._custom_provider_config['models'] = _flatten_custom_models(normalized_profiles)
                 # 更新模型列表
                 self._model_map['custom'] = self._custom_provider_config['models']
                 # 同步到 AIClient（如果已初始化）
@@ -451,12 +551,16 @@ class HeaderMixin:
             cfg, _ = load_config('ai', dcc_type='houdini')
             cfg = cfg or {}
             cc = self._custom_provider_config
-            cfg['custom_api_url'] = cc['api_url']
-            cfg['custom_api_key'] = cc['api_key']
-            cfg['custom_models'] = ','.join(cc['models'])
-            cfg['custom_context_limit'] = str(cc['context_limit'])
-            cfg['custom_supports_vision'] = 'true' if cc['supports_vision'] else 'false'
-            cfg['custom_supports_fc'] = 'true' if cc['supports_fc'] else 'false'
+            profiles = _normalize_custom_profiles(cc.get('profiles') or [cc])
+            primary = profiles[0] if profiles else {}
+            cfg['custom_profiles'] = json.dumps(profiles, ensure_ascii=False, separators=(',', ':'))
+            cfg['custom_profile_name'] = primary.get('name', 'Custom 1')
+            cfg['custom_api_url'] = primary.get('api_url', '')
+            cfg['custom_api_key'] = primary.get('api_key', '')
+            cfg['custom_models'] = ','.join(_flatten_custom_models(profiles))
+            cfg['custom_context_limit'] = str(primary.get('context_limit', 128000))
+            cfg['custom_supports_vision'] = 'true' if primary.get('supports_vision', False) else 'false'
+            cfg['custom_supports_fc'] = 'true' if primary.get('supports_fc', True) else 'false'
             save_config('ai', cfg, dcc_type='houdini')
         except Exception as e:
             print(f"[Header] 保存 Custom 配置失败: {e}")
@@ -468,14 +572,14 @@ class HeaderMixin:
             if client is None:
                 return
             cc = self._custom_provider_config
-            if cc['api_url']:
+            profiles = _normalize_custom_profiles(cc.get('profiles') or [cc])
+            if profiles:
                 client.set_custom_provider(
-                    api_url=cc['api_url'],
-                    api_key=cc['api_key'],
-                    supports_fc=cc['supports_fc'],
+                    api_url=profiles[0].get('api_url', ''),
+                    api_key=profiles[0].get('api_key', ''),
+                    supports_fc=profiles[0].get('supports_fc', True),
+                    profiles=profiles,
                 )
-            if cc['api_key']:
-                client._api_keys['custom'] = cc['api_key']
         except Exception as e:
             print(f"[Header] 同步 Custom 配置到 Client 失败: {e}")
 
@@ -486,7 +590,7 @@ class HeaderMixin:
         self.btn_custom_config.setVisible(is_custom)
         # Custom 模式下允许用户直接在 model_combo 中输入模型名
         self.model_combo.setEditable(is_custom)
-        if is_custom and not self._custom_provider_config.get('api_url'):
+        if is_custom and not self._custom_provider_config.get('api_url') and not self._custom_provider_config.get('profiles'):
             # 首次选择 Custom 且未配置，自动弹出配置对话框
             QtCore.QTimer.singleShot(100, self._open_custom_provider_dialog)
 
@@ -499,12 +603,7 @@ class HeaderMixin:
             # 更新模型列表
             self._model_map['custom'] = new_cfg['models']
             # 动态注册模型特性和上下文限制
-            for m in new_cfg['models']:
-                self._model_context_limits[m] = new_cfg['context_limit']
-                self._model_features[m] = {
-                    'supports_prompt_caching': True,
-                    'supports_vision': new_cfg['supports_vision'],
-                }
+            self._register_custom_model_features(new_cfg.get('profiles', []))
             # 同步到 AIClient
             self._sync_custom_to_client()
             # 持久化
@@ -526,9 +625,28 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self.setWindowTitle(tr("custom.title"))
         self.setMinimumWidth(460)
         self.setObjectName("customProviderDialog")
+        self._profiles = self._profiles_from_config(current_config)
+        self._profile_index = 0
+        self._loading_profile = False
         self._build_ui(current_config)
 
+    def _profiles_from_config(self, cfg: dict) -> list:
+        profiles = _normalize_custom_profiles(cfg.get('profiles'))
+        if profiles:
+            return profiles
+        legacy = {
+            'name': cfg.get('name', 'Custom 1'),
+            'api_url': cfg.get('api_url', ''),
+            'api_key': cfg.get('api_key', ''),
+            'models': cfg.get('models', []),
+            'context_limit': cfg.get('context_limit', 128000),
+            'supports_vision': cfg.get('supports_vision', False),
+            'supports_fc': cfg.get('supports_fc', True),
+        }
+        return _normalize_custom_profiles([legacy])
+
     def _build_ui(self, cfg: dict):
+        active_profile = self._profiles[0]
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -545,17 +663,41 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
+        profile_row = QtWidgets.QHBoxLayout()
+        profile_row.setSpacing(4)
+        self._profile_combo = QtWidgets.QComboBox()
+        self._profile_combo.setMinimumHeight(28)
+        self._profile_combo.setEditable(True)
+        self._profile_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        for profile in self._profiles:
+            self._profile_combo.addItem(profile.get('name', 'Custom'))
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        profile_row.addWidget(self._profile_combo, 1)
+
+        self._btn_add_profile = QtWidgets.QPushButton("+")
+        self._btn_add_profile.setFixedSize(28, 28)
+        self._btn_add_profile.setToolTip("新增一组 URL / API Key")
+        self._btn_add_profile.clicked.connect(self._add_profile)
+        profile_row.addWidget(self._btn_add_profile)
+
+        self._btn_delete_profile = QtWidgets.QPushButton("-")
+        self._btn_delete_profile.setFixedSize(28, 28)
+        self._btn_delete_profile.setToolTip("删除当前配置组")
+        self._btn_delete_profile.clicked.connect(self._delete_profile)
+        profile_row.addWidget(self._btn_delete_profile)
+        form.addRow("配置组:", profile_row)
+
         # API URL
         self._url_edit = QtWidgets.QLineEdit()
         self._url_edit.setPlaceholderText(tr("custom.url_placeholder"))
-        self._url_edit.setText(cfg.get('api_url', ''))
+        self._url_edit.setText(active_profile.get('api_url', ''))
         self._url_edit.setMinimumHeight(28)
         form.addRow("API URL:", self._url_edit)
 
         # API Key
         self._key_edit = QtWidgets.QLineEdit()
         self._key_edit.setPlaceholderText(tr("custom.key_placeholder"))
-        self._key_edit.setText(cfg.get('api_key', ''))
+        self._key_edit.setText(active_profile.get('api_key', ''))
         self._key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self._key_edit.setMinimumHeight(28)
         # 显示/隐藏按钮
@@ -580,7 +722,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
         self._models_edit.setPlaceholderText("glm-4.5\nglm-4.7\nglm-5.1")
-        self._models_edit.setPlainText('\n'.join(cfg.get('models', [])))
+        self._models_edit.setPlainText('\n'.join(active_profile.get('models', [])))
 
         models_row = QtWidgets.QHBoxLayout()
         models_row.setSpacing(4)
@@ -598,7 +740,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._ctx_spin = QtWidgets.QSpinBox()
         self._ctx_spin.setRange(1024, 10000000)
         self._ctx_spin.setSingleStep(1024)
-        self._ctx_spin.setValue(cfg.get('context_limit', 128000))
+        self._ctx_spin.setValue(active_profile.get('context_limit', 128000))
         self._ctx_spin.setSuffix(" tokens")
         self._ctx_spin.setMinimumHeight(28)
         form.addRow(tr("custom.context_length"), self._ctx_spin)
@@ -607,10 +749,10 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         features_row = QtWidgets.QHBoxLayout()
         features_row.setSpacing(12)
         self._chk_vision = QtWidgets.QCheckBox(tr("custom.supports_vision"))
-        self._chk_vision.setChecked(cfg.get('supports_vision', False))
+        self._chk_vision.setChecked(active_profile.get('supports_vision', False))
         features_row.addWidget(self._chk_vision)
         self._chk_fc = QtWidgets.QCheckBox(tr("custom.supports_fc"))
-        self._chk_fc.setChecked(cfg.get('supports_fc', True))
+        self._chk_fc.setChecked(active_profile.get('supports_fc', True))
         features_row.addWidget(self._chk_fc)
         features_row.addStretch()
         form.addRow(tr("custom.features"), features_row)
@@ -687,6 +829,83 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             }
             QPushButton:hover { background: #444; border-color: #6a9eff; }
         """)
+
+    def _save_current_profile(self):
+        if not self._profiles:
+            return
+        idx = max(0, min(self._profile_index, len(self._profiles) - 1))
+        name = self._profile_combo.currentText().strip() or f'Custom {idx + 1}'
+        self._profiles[idx] = {
+            'name': name,
+            'api_url': self._url_edit.text().strip(),
+            'api_key': self._key_edit.text().strip(),
+            'models': self._model_names(),
+            'context_limit': self._ctx_spin.value(),
+            'supports_vision': self._chk_vision.isChecked(),
+            'supports_fc': self._chk_fc.isChecked(),
+        }
+        self._profile_combo.setItemText(idx, name)
+
+    def _load_profile(self, index: int):
+        if index < 0 or index >= len(self._profiles):
+            return
+        profile = self._profiles[index]
+        self._loading_profile = True
+        try:
+            self._profile_combo.setCurrentIndex(index)
+            self._profile_combo.setCurrentText(profile.get('name', f'Custom {index + 1}'))
+            self._url_edit.setText(profile.get('api_url', ''))
+            self._key_edit.setText(profile.get('api_key', ''))
+            self._set_model_names(profile.get('models', []))
+            self._ctx_spin.setValue(profile.get('context_limit', 128000))
+            self._chk_vision.setChecked(profile.get('supports_vision', False))
+            self._chk_fc.setChecked(profile.get('supports_fc', True))
+        finally:
+            self._loading_profile = False
+
+    def _on_profile_changed(self, index: int):
+        if self._loading_profile or index < 0 or index == self._profile_index:
+            return
+        self._save_current_profile()
+        self._profile_index = index
+        self._load_profile(index)
+
+    def _add_profile(self):
+        self._save_current_profile()
+        index = len(self._profiles) + 1
+        profile = {
+            'name': f'Custom {index}',
+            'api_url': '',
+            'api_key': '',
+            'models': [],
+            'context_limit': 128000,
+            'supports_vision': False,
+            'supports_fc': True,
+        }
+        self._profiles.append(profile)
+        self._loading_profile = True
+        self._profile_combo.addItem(profile['name'])
+        self._loading_profile = False
+        self._profile_index = len(self._profiles) - 1
+        self._load_profile(self._profile_index)
+
+    def _delete_profile(self):
+        if len(self._profiles) <= 1:
+            self._url_edit.clear()
+            self._key_edit.clear()
+            self._set_model_names([])
+            self._ctx_spin.setValue(128000)
+            self._chk_vision.setChecked(False)
+            self._chk_fc.setChecked(True)
+            self._save_current_profile()
+            return
+        idx = self._profile_index
+        self._profiles.pop(idx)
+        self._loading_profile = True
+        self._profile_combo.removeItem(idx)
+        self._loading_profile = False
+        self._profile_index = min(idx, len(self._profiles) - 1)
+        self._load_profile(self._profile_index)
 
     def _model_names(self) -> list:
         """Return model names from the multiline model editor."""
@@ -801,24 +1020,35 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
     def _on_accept(self):
         """确认前校验必填项"""
-        url = self._url_edit.text().strip()
-        models = self._model_names()
-        if not url:
+        self._save_current_profile()
+        profiles = [
+            p for p in _normalize_custom_profiles(self._profiles)
+            if p.get('api_url') or p.get('models')
+        ]
+        if not profiles or any(not p.get('api_url') for p in profiles):
             QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_url_plain"))
             return
-        if not models:
+        if any(not p.get('models') for p in profiles):
             QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_model"))
             return
         self.accept()
 
     def get_config(self) -> dict:
         """返回用户配置的字典"""
-        models = self._model_names()
+        self._save_current_profile()
+        profiles = [
+            p for p in _normalize_custom_profiles(self._profiles)
+            if p.get('api_url') or p.get('models')
+        ]
+        primary = profiles[0] if profiles else {}
+        models = _flatten_custom_models(profiles)
         return {
-            'api_url': self._url_edit.text().strip(),
-            'api_key': self._key_edit.text().strip(),
+            'name': primary.get('name', 'Custom 1'),
+            'api_url': primary.get('api_url', ''),
+            'api_key': primary.get('api_key', ''),
             'models': models,
-            'context_limit': self._ctx_spin.value(),
-            'supports_vision': self._chk_vision.isChecked(),
-            'supports_fc': self._chk_fc.isChecked(),
+            'context_limit': primary.get('context_limit', 128000),
+            'supports_vision': primary.get('supports_vision', False),
+            'supports_fc': primary.get('supports_fc', True),
+            'profiles': profiles,
         }

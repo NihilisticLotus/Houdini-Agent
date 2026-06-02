@@ -96,6 +96,9 @@ _ZH = {
 
     # ===== Session Manager =====
     'session.new': '新建对话',
+    'session.rename': '重命名',
+    'session.rename_title': '重命名对话',
+    'session.rename_prompt': '输入新的对话标题:',
     'session.close': '关闭此对话',
     'session.close_others': '关闭其他对话',
     'session.default_label': '对话 {}',
@@ -829,6 +832,9 @@ _EN = {
 
     # ===== Session Manager =====
     'session.new': 'New Chat',
+    'session.rename': 'Rename',
+    'session.rename_title': 'Rename Chat',
+    'session.rename_prompt': 'Enter a new chat title:',
     'session.close': 'Close this chat',
     'session.close_others': 'Close other chats',
     'session.default_label': 'Chat {}',
