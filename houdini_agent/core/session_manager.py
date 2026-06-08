@@ -74,12 +74,14 @@ class SessionManagerMixin:
     def _create_session_widgets(self) -> tuple:
         """创建单个会话的 scroll_area / chat_container / chat_layout"""
         scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setMinimumWidth(0)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         scroll_area.setObjectName("chatScrollArea")
         
         chat_container = QtWidgets.QWidget()
+        chat_container.setMinimumWidth(0)
         chat_layout = QtWidgets.QVBoxLayout(chat_container)
         chat_layout.setContentsMargins(4, 8, 4, 8)
         chat_layout.setSpacing(0)

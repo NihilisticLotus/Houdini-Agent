@@ -332,6 +332,7 @@ class ThinkingSection(CollapsibleSection):
     def __init__(self, parent=None):
         # 历史恢复时默认折叠；实时生成思考内容时由 AIResponse.add_thinking 展开。
         super().__init__(tr('thinking.init'), icon="", collapsed=True, parent=parent)
+        self.setMinimumWidth(0)
         # ★ 防止被父布局拉伸 —— 内容多大就多大
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
@@ -354,6 +355,8 @@ class ThinkingSection(CollapsibleSection):
         self.thinking_label.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.thinking_label.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.thinking_label.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.thinking_label.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.thinking_label.setMinimumWidth(0)
         self.thinking_label.setObjectName("thinkLabel")
         # 初始高度为一行（紧凑），流式输入时会动态增大
         self._line_h = QtGui.QFontMetrics(self._text_font).lineSpacing()
@@ -370,6 +373,7 @@ class ThinkingSection(CollapsibleSection):
         逐块遍历 block.layout().lineCount() 统计真实视觉行数。
         """
         doc = self.thinking_label.document()
+        doc.setTextWidth(max(120, self.thinking_label.viewport().width()))
         visual_lines = 0
         block = doc.begin()
         while block.isValid():
@@ -717,6 +721,7 @@ class ExecutionSection(CollapsibleSection):
 
     def __init__(self, parent=None):
         super().__init__(tr('exec.running'), icon="", collapsed=True, parent=parent)
+        self.setMinimumWidth(0)
         self._tool_calls: List[ToolCallItem] = []
         self._start_time = time.time()
         
@@ -879,8 +884,11 @@ class UserMessage(QtWidgets.QWidget):
 
     _COLLAPSED_MAX_LINES = 2  # 折叠时显示的最大行数
 
+    _SOFT_WRAP_EVERY = 18
+
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
         self._full_text = text
         self._collapsed = False  # 初始状态由 _maybe_collapse 决定
 
@@ -891,6 +899,7 @@ class UserMessage(QtWidgets.QWidget):
         # ---- 主容器（带左边框） ----
         self._container = QtWidgets.QWidget()
         self._container.setObjectName("userMsgContainer")
+        self._container.setMinimumWidth(0)
         self._container.setSizePolicy(
             QtWidgets.QSizePolicy.Maximum,
             QtWidgets.QSizePolicy.Preferred,
@@ -900,11 +909,12 @@ class UserMessage(QtWidgets.QWidget):
         container_layout.setSpacing(2)
 
         # ---- 内容标签 ----
-        self.content = QtWidgets.QLabel(text)
+        self.content = QtWidgets.QLabel(self._soft_wrap_text(text))
         self.content.setWordWrap(True)
         self.content.setTextFormat(QtCore.Qt.PlainText)
         self.content.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.content.setObjectName("userMsgText")
+        self.content.setMinimumWidth(0)
         container_layout.addWidget(self.content)
 
         # ---- 展开/收起 按钮 ----
@@ -938,10 +948,26 @@ class UserMessage(QtWidgets.QWidget):
         self._container.setMaximumWidth(max_w)
         content_max = max(120, max_w - 24)
         self.content.setMaximumWidth(content_max)
-        lines = (self.content.text() or self._full_text or "").splitlines() or [""]
-        fm = QtGui.QFontMetrics(self.content.font())
-        natural_w = max(fm.horizontalAdvance(line) for line in lines) + 2
-        self.content.setMinimumWidth(min(content_max, max(40, natural_w)))
+        self.content.setMinimumWidth(0)
+        self._container.updateGeometry()
+
+    @classmethod
+    def _soft_wrap_text(cls, text: str) -> str:
+        """Insert zero-width break points into long runs so QLabel can wrap."""
+        if not text:
+            return ""
+        out = []
+        run = 0
+        for ch in text:
+            out.append(ch)
+            if ch.isspace() or ch in "/\\,.;:|()[]{}<>+-=*":
+                run = 0
+                continue
+            run += 1
+            if run >= cls._SOFT_WRAP_EVERY:
+                out.append("\u200b")
+                run = 0
+        return "".join(out)
 
     def _maybe_collapse(self):
         """检查文本是否超过阈值行数，超过则自动折叠"""
@@ -960,14 +986,14 @@ class UserMessage(QtWidgets.QWidget):
         preview = '\n'.join(lines[:self._COLLAPSED_MAX_LINES])
         if len(lines) > self._COLLAPSED_MAX_LINES:
             preview += ' …'
-        self.content.setText(preview)
+        self.content.setText(self._soft_wrap_text(preview))
         remaining = len(lines) - self._COLLAPSED_MAX_LINES
         self._toggle_btn.setText(tr('msg.expand', remaining))
         QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
     def _apply_expanded(self):
         """应用展开状态：显示完整文本"""
-        self.content.setText(self._full_text)
+        self.content.setText(self._soft_wrap_text(self._full_text))
         self._toggle_btn.setText(tr('msg.collapse'))
         QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
@@ -997,6 +1023,7 @@ class AIResponse(QtWidgets.QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
         self._start_time = time.time()
         self._content = ""
         self._has_thinking = False
@@ -1060,6 +1087,7 @@ class AIResponse(QtWidgets.QWidget):
         # === 总结/回复区域 ===
         self.summary_frame = QtWidgets.QFrame()
         self.summary_frame.setObjectName("aiSummary")
+        self.summary_frame.setMinimumWidth(0)
         self._summary_layout = QtWidgets.QVBoxLayout(self.summary_frame)
         self._summary_layout.setContentsMargins(8, 8, 6, 8)
         self._summary_layout.setSpacing(4)
@@ -1087,6 +1115,7 @@ class AIResponse(QtWidgets.QWidget):
         
         # ★ 已冻结段落容器 — 增量渲染时冻结的富文本/代码块放在这里
         self._frozen_container = QtWidgets.QWidget()
+        self._frozen_container.setMinimumWidth(0)
         self._frozen_layout = QtWidgets.QVBoxLayout(self._frozen_container)
         self._frozen_layout.setContentsMargins(0, 0, 0, 0)
         self._frozen_layout.setSpacing(0)  # 段落间距由 HTML margin 控制
@@ -1103,6 +1132,8 @@ class AIResponse(QtWidgets.QWidget):
         self.content_label.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.content_label.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.content_label.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.content_label.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.content_label.setMinimumWidth(0)
         # 让 size hint 跟随内容自动增长（不设固定高度）
         self.content_label.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
@@ -1144,9 +1175,21 @@ class AIResponse(QtWidgets.QWidget):
         for child in self._frozen_container.findChildren(QtWidgets.QWidget):
             name = child.objectName()
             if name in ("richText", "richImage") or isinstance(child, CodeBlockWidget):
+                child.setMinimumWidth(0)
                 child.setMaximumWidth(width)
                 child.updateGeometry()
+        for child in self.findChildren(QtWidgets.QPlainTextEdit):
+            child.setMaximumWidth(width)
+            if hasattr(child, "setWordWrapMode"):
+                child.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        for child in self.findChildren(QtWidgets.QTextEdit):
+            child.setMaximumWidth(width)
+            if hasattr(child, "setWordWrapMode"):
+                child.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
         self._frozen_container.updateGeometry()
+        if self.thinking_section.isVisible():
+            self.thinking_section.thinking_label.document().setTextWidth(width)
+            self.thinking_section._update_height()
         self._auto_resize_content()
 
     def resizeEvent(self, event):
@@ -1217,6 +1260,7 @@ class AIResponse(QtWidgets.QWidget):
         percent: 160 = 1.6 倍行间距。
         """
         doc = self.content_label.document()
+        doc.setTextWidth(self._available_content_width())
         cursor = QtGui.QTextCursor(doc)
         cursor.select(QtGui.QTextCursor.Document)
         fmt = QtGui.QTextBlockFormat()
@@ -1230,6 +1274,7 @@ class AIResponse(QtWidgets.QWidget):
         加上一个小的底部边距作为最终高度。
         """
         doc = self.content_label.document()
+        doc.setTextWidth(self._available_content_width())
         # 确保布局信息是最新的
         doc.adjustSize()
         doc_height = int(doc.size().height())
@@ -1774,6 +1819,7 @@ class StreamingCodePreview(QtWidgets.QWidget):
 
     def __init__(self, tool_name: str, parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
         self.setObjectName("streamingCodePreview")
         self._tool_name = tool_name
 
@@ -1790,8 +1836,11 @@ class StreamingCodePreview(QtWidgets.QWidget):
         self._code_area = QtWidgets.QPlainTextEdit()
         self._code_area.setReadOnly(True)
         self._code_area.setObjectName("streamingCodeArea")
+        self._code_area.setMinimumWidth(0)
         self._code_area.setMaximumHeight(200)
-        self._code_area.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self._code_area.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self._code_area.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self._code_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         layout.addWidget(self._code_area)
 
         # 记录上次已显示的代码长度，只追加增量
@@ -4859,6 +4908,7 @@ class CodeBlockWidget(QtWidgets.QFrame):
 
     def __init__(self, code: str, language: str = "", parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
         self._code = code
         self._lang = language.lower()
         self._line_count = code.count('\n') + 1
@@ -4923,15 +4973,17 @@ class CodeBlockWidget(QtWidgets.QFrame):
         # ---- code area ----
         self._code_edit = QtWidgets.QTextEdit()
         self._code_edit.setReadOnly(True)
-        self._code_edit.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self._code_edit.setMinimumWidth(0)
+        self._code_edit.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+        self._code_edit.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
         self._code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self._code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self._code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._code_edit.setObjectName("codeBlockEdit")
 
         highlighted = self._highlight()
         code_html = self._add_line_numbers(highlighted) if self._show_line_numbers else highlighted
         self._code_edit.setHtml(
-            f'<pre style="margin:0;white-space:pre;">{code_html}</pre>'
+            f'<pre style="margin:0;white-space:pre-wrap;">{code_html}</pre>'
         )
         # auto-height (capped)
         doc = self._code_edit.document()
@@ -4950,6 +5002,25 @@ class CodeBlockWidget(QtWidgets.QFrame):
             self._code_edit.setFixedHeight(min(self._full_h, self._MAX_HEIGHT))
 
         layout.addWidget(self._code_edit)
+        QtCore.QTimer.singleShot(0, self._update_code_height)
+
+    def _update_code_height(self):
+        doc = self._code_edit.document()
+        doc.setTextWidth(max(120, self._code_edit.viewport().width()))
+        doc.adjustSize()
+        self._full_h = int(doc.size().height()) + 20
+        if self._collapsed:
+            self._code_edit.setFixedHeight(min(self._collapsed_h, self._MAX_HEIGHT))
+            self._code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        else:
+            self._code_edit.setFixedHeight(min(self._full_h, self._MAX_HEIGHT))
+            self._code_edit.setVerticalScrollBarPolicy(
+                QtCore.Qt.ScrollBarAsNeeded if self._full_h > self._MAX_HEIGHT else QtCore.Qt.ScrollBarAlwaysOff
+            )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_code_height()
 
     def _add_line_numbers(self, highlighted_code: str) -> str:
         """为高亮代码添加行号（使用 HTML table 布局）"""
@@ -4983,6 +5054,8 @@ class CodeBlockWidget(QtWidgets.QFrame):
             else:
                 self._code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self._toggle_btn.setText("收起")
+
+        QtCore.QTimer.singleShot(0, self._update_code_height)
 
     # --- helpers ---
     def _is_vex(self) -> bool:
@@ -5064,6 +5137,8 @@ class RichContentWidget(QtWidgets.QWidget):
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)  # 段落间距由 HTML margin 控制
@@ -5073,6 +5148,8 @@ class RichContentWidget(QtWidgets.QWidget):
         for seg in segments:
             if seg[0] == 'text':
                 lbl = QtWidgets.QLabel()
+                lbl.setMinimumWidth(0)
+                lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
                 lbl.setWordWrap(True)
                 lbl.setTextFormat(QtCore.Qt.RichText)
                 lbl.setOpenExternalLinks(False)  # 我们自己处理链接
@@ -5093,6 +5170,7 @@ class RichContentWidget(QtWidgets.QWidget):
                 img_url = seg[1]
                 img_alt = seg[2] if len(seg) > 2 else ''
                 img_lbl = QtWidgets.QLabel()
+                img_lbl.setMinimumWidth(0)
                 img_lbl.setObjectName("richImage")
                 img_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
                 img_lbl.setWordWrap(False)
