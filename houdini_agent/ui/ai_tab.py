@@ -99,6 +99,7 @@ class AITab(
     _addNodeOperation = QtCore.Signal(str, object)  # (name, result_dict) ★ 直接传 dict，避免 JSON 序列化/反序列化开销
     _addPythonShell = QtCore.Signal(str, str)  # (code, result_json)
     _addSystemShell = QtCore.Signal(str, str)  # (command, result_json)
+    _addViewportSnapshot = QtCore.Signal(str, str, str)  # (label, base64, media_type)
     _executeToolRequest = QtCore.Signal(str, dict)  # 工具执行请求信号（线程安全）
     _executeToolBatchRequest = QtCore.Signal(list)   # 批量工具执行请求：[(tool_name, kwargs), ...]
     _addThinking = QtCore.Signal(str)  # 思考内容更新信号（线程安全）
@@ -242,6 +243,7 @@ class AITab(
         self._addNodeOperation.connect(self._on_add_node_operation)
         self._addPythonShell.connect(self._on_add_python_shell)
         self._addSystemShell.connect(self._on_add_system_shell)
+        self._addViewportSnapshot.connect(self._on_add_viewport_snapshot)
         self._executeToolRequest.connect(self._on_execute_tool_main_thread, QtCore.Qt.BlockingQueuedConnection)
         self._executeToolBatchRequest.connect(self._on_execute_tool_batch_main_thread, QtCore.Qt.BlockingQueuedConnection)
         self._addThinking.connect(self._on_add_thinking)
@@ -684,12 +686,13 @@ class AITab(
         review action so raw reasoning does not get written directly to memory.
         """
         try:
-            cand = get_experience_store().create_from_history(session_id, history)
-            if not cand:
+            candidates = get_experience_store().create_many_from_history(session_id, history)
+            if not candidates:
                 return
             print(
-                f"[Experience] candidate queued: {cand.id} "
-                f"status={cand.status} quality={cand.quality_score:.2f}"
+                f"[Experience] candidates queued: {len(candidates)} "
+                f"first={candidates[0].id} status={candidates[0].status} "
+                f"quality={candidates[0].quality_score:.2f}"
             )
             try:
                 dlg = getattr(self, "_experience_review_dialog", None)
@@ -1941,6 +1944,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         tool_calls_history = result.get('tool_calls_history', [])
         new_messages = result.get('new_messages', [])
+        assistant_history_start = len(history)
         
         # 1. 添加工具交互链（原生 OpenAI 格式）
         # new_messages 包含：assistant(tool_calls) + tool(results) + ...
@@ -2025,6 +2029,12 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             history.append(final_msg)
 
         # 工作流经验候选自动沉淀：只进入审阅队列，不直接晋升。
+        if resp and len(history) > assistant_history_start:
+            try:
+                resp.set_history_range(assistant_history_start, len(history))
+            except RuntimeError:
+                pass
+
         agent_sid = self._agent_session_id or self._session_id
         if history and agent_sid:
             history_snapshot = [m.copy() for m in history]
@@ -2138,6 +2148,12 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         # ★ 确保历史以 assistant 结尾（防止连续 user 消息破坏结构）
         self._ensure_history_ends_with_assistant(f"[Error] {error}")
+        history = self._agent_history if self._agent_history is not None else self._conversation_history
+        if resp and history and history[-1].get('role') == 'assistant':
+            try:
+                resp.set_history_range(len(history) - 1, len(history))
+            except RuntimeError:
+                pass
         
         self._set_running(False)
 
@@ -2165,6 +2181,12 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         # ★ 确保历史以 assistant 结尾（防止连续 user 消息破坏结构）
         self._ensure_history_ends_with_assistant("[Stopped by user]")
+        history = self._agent_history if self._agent_history is not None else self._conversation_history
+        if resp and history and history[-1].get('role') == 'assistant':
+            try:
+                resp.set_history_range(len(history) - 1, len(history))
+            except RuntimeError:
+                pass
         
         self._set_running(False)
         self._hideToolStatus.emit()
@@ -3577,7 +3599,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         pending_imgs = [img for img in self._pending_images if img is not None] if has_images else []
 
         # 显示用户消息（含图片缩略图）
-        self._add_user_message(text, images=pending_imgs)
+        user_msg_widget = self._add_user_message(text, images=pending_imgs)
         self.input_edit.clear()
         self._clear_pending_images()
         
@@ -3590,9 +3612,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         # 构建消息内容（文字或多模态）
         if pending_imgs:
             msg_content = self._build_multimodal_content(processed_text, pending_imgs)
+            user_history_index = len(self._conversation_history)
             self._conversation_history.append({'role': 'user', 'content': msg_content})
         else:
+            user_history_index = len(self._conversation_history)
             self._conversation_history.append({'role': 'user', 'content': processed_text})
+        if user_msg_widget:
+            user_msg_widget.set_history_range(user_history_index, user_history_index + 1)
         
         # 更新上下文统计
         self._update_context_stats()
@@ -4311,6 +4337,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         """添加工具结果到执行流程（自动压缩长结果）"""
         result_text = str(result.get('result', result.get('error', '')))
         success = result.get('success', True)
+        if name == 'capture_viewport' and result.get('_viewport_image'):
+            label = "Auto viewport snapshot" if (arguments or {}).get('_auto') else "Viewport snapshot"
+            self._addViewportSnapshot.emit(
+                label,
+                result.get('_viewport_image', ''),
+                result.get('_image_media_type', 'image/jpeg'),
+            )
         
         # ★ 从工具结果和参数中提取节点路径，用于后处理裸节点名
         self._collect_node_paths_from_tool(result, arguments)
@@ -4381,6 +4414,16 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             prefix = "[err]" if not success else "[ok]"
             invoke_on_main(self, "_add_tool_result_ui", name, f"{prefix} {result_text}")
     
+    @QtCore.Slot(str, str, str)
+    def _on_add_viewport_snapshot(self, label: str, b64_data: str, media_type: str):
+        """Render a capture_viewport image as a clickable chat thumbnail."""
+        try:
+            image_tuple = self._image_tuple_from_b64(b64_data, media_type or 'image/jpeg')
+            if image_tuple:
+                self._add_user_message(label or "Viewport snapshot", images=[image_tuple])
+        except RuntimeError:
+            pass
+
     @QtCore.Slot(str, str)
     def _add_tool_result_ui(self, name: str, result: str):
         """在 UI 线程中添加工具结果"""
@@ -7087,21 +7130,28 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         else:
             content = raw_content
 
-        if role == 'user':
-            self._render_user_history(content)
+        if role == 'user' and isinstance(raw_content, list):
+            history_text, history_images = self._extract_multimodal_user_content(raw_content)
+            if history_images:
+                self._add_user_message(history_text or "[Image]", images=history_images, history_range=(si, ei))
+            else:
+                self._render_user_history(history_text or content, history_range=(si, ei))
+
+        elif role == 'user':
+            self._render_user_history(content, history_range=(si, ei))
 
         elif role == 'assistant':
             if msg.get('tool_calls'):
                 turn_msgs = messages[si:ei]
-                self._render_native_tool_turn(turn_msgs)
+                self._render_native_tool_turn(turn_msgs, history_range=(si, ei))
             else:
                 tool_msgs = [messages[j] for j in range(si + 1, ei)
                              if messages[j].get('role') == 'tool']
 
                 if content.lstrip().startswith('[工具执行结果]'):
-                    self._render_tool_summary_history(content, msg)
+                    self._render_tool_summary_history(content, msg, history_range=(si, ei))
                 else:
-                    response = self._add_ai_response()
+                    response = self._add_ai_response(history_range=(si, ei))
                     thinking = msg.get('thinking', '')
                     if thinking:
                         response.add_thinking(thinking)
@@ -7120,7 +7170,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                     response.status_label.setText(label)
 
         elif role == 'system' and '[历史对话摘要' in content:
-            response = self._add_ai_response()
+            response = self._add_ai_response(history_range=(si, ei))
             response.add_collapsible("历史对话摘要", content)
             response.status_label.setText("历史摘要")
             response.finalize()
@@ -7241,14 +7291,14 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             pass  # 解析失败忽略
 
     # ------------------------------------------------------------------
-    def _render_native_tool_turn(self, turn_msgs: list):
+    def _render_native_tool_turn(self, turn_msgs: list, history_range: tuple = None):
         """渲染 Cursor 风格原生工具调用轮次
         
         turn_msgs 格式：
           assistant(tool_calls) → tool → [assistant(tool_calls) → tool →] ... → assistant(reply)
         静默工具（add_todo/update_todo）不显示在执行列表中，但会恢复 todo 数据。
         """
-        response = self._add_ai_response()
+        response = self._add_ai_response(history_range=history_range)
         tool_count = 0
         final_content = ''
         thinking = ''
@@ -7322,7 +7372,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         return ''
 
     # ------------------------------------------------------------------
-    def _render_user_history(self, content: str):
+    def _render_user_history(self, content: str, history_range: tuple = None):
         """渲染用户历史消息，长上下文自动折叠"""
         # 检查是否包含 [Network structure] 等上下文注入
         split_pos = -1
@@ -7340,27 +7390,27 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             context_data = content[split_pos:]
             # 显示用户实际文字
             if user_text:
-                self._add_user_message(user_text)
+                self._add_user_message(user_text, history_range=history_range)
             # 上下文放进折叠区域
-            resp = self._add_ai_response()
+            resp = self._add_ai_response(history_range=history_range)
             resp.add_collapsible(header_tag.strip('[]'), context_data)
             resp.status_label.setText("上下文")
             resp.finalize()
             resp.status_label.setText("上下文")
         elif split_pos == 0 and len(content) > 300:
             # 纯上下文（无用户文字），整块折叠
-            resp = self._add_ai_response()
+            resp = self._add_ai_response(history_range=history_range)
             resp.add_collapsible(header_tag.strip('[]'), content)
             resp.status_label.setText("上下文")
             resp.finalize()
             resp.status_label.setText("上下文")
         else:
-            self._add_user_message(content)
+            self._add_user_message(content, history_range=history_range)
 
     # ------------------------------------------------------------------
     _TOOL_LINE_PREFIXES = ('[ok] ', '[err] ', '\u2705 ', '\u274c ')
 
-    def _render_tool_summary_history(self, content: str, msg: dict = None):
+    def _render_tool_summary_history(self, content: str, msg: dict = None, history_range: tuple = None):
         """渲染 [工具执行结果] 格式的 assistant 消息
 
         格式示例：
@@ -7372,7 +7422,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         """
         if msg is None:
             msg = {}
-        response = self._add_ai_response()
+        response = self._add_ai_response(history_range=history_range)
 
         # 先按行分组：以 [ok]/[err]/✅/❌ 开头的行开始新条目，
         # 其他行归到前一条目的续行

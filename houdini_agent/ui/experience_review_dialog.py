@@ -36,8 +36,11 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._items_by_id: Dict[str, ExperienceCandidate] = {}
         self._current_id = ""
         self._lane_lists: Dict[str, QtWidgets.QListWidget] = {}
+        self._lane_frames: Dict[str, QtWidgets.QFrame] = {}
         self._lane_headers: Dict[str, QtWidgets.QLabel] = {}
         self._detail_sections: Dict[str, QtWidgets.QLabel] = {}
+        settings = QtCore.QSettings("HoudiniAgent", "Settings")
+        self._show_rejected = settings.value("experience/show_rejected", True, type=bool)
 
         self.setObjectName("experienceReviewDlg")
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -99,6 +102,11 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._scope_combo.currentIndexChanged.connect(self._reload)
         header.addWidget(self._scope_combo)
 
+        self._show_rejected_check = QtWidgets.QCheckBox()
+        self._show_rejected_check.setChecked(self._show_rejected)
+        self._show_rejected_check.toggled.connect(self._toggle_rejected_lane)
+        header.addWidget(self._show_rejected_check)
+
         self._btn_reload = QtWidgets.QPushButton()
         self._btn_reload.clicked.connect(self._reload)
         header.addWidget(self._btn_reload)
@@ -106,6 +114,10 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._btn_extract = QtWidgets.QPushButton()
         self._btn_extract.clicked.connect(self._extract_current_session)
         header.addWidget(self._btn_extract)
+
+        self._btn_export_curated = QtWidgets.QPushButton()
+        self._btn_export_curated.clicked.connect(self._export_curated_experiences)
+        header.addWidget(self._btn_export_curated)
 
         self._btn_title_close = QtWidgets.QPushButton("×")
         self._btn_title_close.setObjectName("expTitleClose")
@@ -174,6 +186,9 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._btn_reject = QtWidgets.QPushButton()
         self._btn_reject.clicked.connect(lambda: self._set_current_status("rejected"))
         actions.addWidget(self._btn_reject)
+        self._btn_delete = QtWidgets.QPushButton()
+        self._btn_delete.clicked.connect(self._delete_current)
+        actions.addWidget(self._btn_delete)
         actions.addStretch()
         self._btn_close = QtWidgets.QPushButton()
         self._btn_close.clicked.connect(self.close)
@@ -211,6 +226,7 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         lst.itemClicked.connect(lambda item, s=status: self._select_from_item(item, s))
         lay.addWidget(lst, 1)
         self._lane_lists[status] = lst
+        self._lane_frames[status] = lane
         return lane
 
     def _add_detail_section(self, title_key: str) -> QtWidgets.QLabel:
@@ -314,6 +330,15 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
                 padding: 5px 10px;
                 font-size: {body_px}px;
             }}
+            QCheckBox {{
+                color: #d8e2ee;
+                font-size: {body_px}px;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 15px;
+                height: 15px;
+            }}
             QPushButton:hover {{
                 background: #263346;
                 border-color: #5a708b;
@@ -390,9 +415,12 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
 
         self._btn_reload.setText(tr("experience.refresh"))
         self._btn_extract.setText(tr("experience.extract"))
+        self._btn_export_curated.setText(tr("experience.export_curated"))
+        self._show_rejected_check.setText(tr("experience.show_rejected"))
         self._btn_promote.setText(tr("experience.promote"))
         self._btn_later.setText(tr("experience.later"))
         self._btn_reject.setText(tr("experience.reject"))
+        self._btn_delete.setText(tr("experience.delete_rejected"))
         self._btn_close.setText(tr("btn.close"))
         self._render_detail(self._selected_candidate())
 
@@ -402,7 +430,14 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
 
     def _reload(self):
         current_id = self._current_id
-        self._items = self._filtered_items()
+        scoped_items = self._scoped_items()
+        counts = {status: 0 for status in self._LANES}
+        for cand in scoped_items:
+            status = cand.status if cand.status in self._LANES else "candidate"
+            counts[status] += 1
+
+        self._lane_frames["rejected"].setVisible(self._show_rejected)
+        self._items = scoped_items if self._show_rejected else [c for c in scoped_items if c.status != "rejected"]
         self._items_by_id = {c.id: c for c in self._items}
 
         for lst in self._lane_lists.values():
@@ -410,10 +445,8 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
             lst.clear()
             lst.blockSignals(False)
 
-        counts = {status: 0 for status in self._LANES}
         for cand in self._items:
             status = cand.status if cand.status in self._LANES else "candidate"
-            counts[status] += 1
             item = QtWidgets.QListWidgetItem(self._card_text(cand))
             item.setToolTip(cand.summary or cand.proposed_rule)
             item.setData(QtCore.Qt.UserRole, cand.id)
@@ -444,12 +477,21 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
             self._render_detail(None)
         self._update_buttons()
 
-    def _filtered_items(self):
+    def _scoped_items(self):
         items = self._store.list_candidates(status="all", limit=300)
         if self._scope_combo.currentData() == "current":
             sid = getattr(self._ai_tab, "_session_id", "")
             items = [c for c in items if c.session_id == sid]
         return items
+
+    def _toggle_rejected_lane(self, checked: bool):
+        self._show_rejected = bool(checked)
+        settings = QtCore.QSettings("HoudiniAgent", "Settings")
+        settings.setValue("experience/show_rejected", self._show_rejected)
+        cand = self._selected_candidate()
+        if cand and cand.status == "rejected" and not self._show_rejected:
+            self._current_id = ""
+        self._reload()
 
     def _lane_title(self, status: str, count: int) -> str:
         return f"{self._status_label(status).upper()} · {count}"
@@ -544,17 +586,18 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._btn_promote.setEnabled(can_review)
         self._btn_later.setEnabled(has and cand.status == "candidate")
         self._btn_reject.setEnabled(can_review)
+        self._btn_delete.setEnabled(has and cand.status == "rejected")
 
     def _extract_current_session(self):
         history = getattr(self._ai_tab, "_conversation_history", [])
         session_id = getattr(self._ai_tab, "_session_id", "")
-        cand = self._store.create_from_history(session_id, history)
-        if not cand:
+        candidates = self._store.create_many_from_history(session_id, history)
+        if not candidates:
             self._notice.setText(tr("experience.no_history"))
             return
-        self._current_id = cand.id
+        self._current_id = candidates[0].id
         self._reload()
-        self._notice.setText(tr("experience.extracted"))
+        self._notice.setText(tr("experience.extracted_count", len(candidates)))
 
     def _promote_current(self):
         cand = self._selected_candidate()
@@ -577,3 +620,50 @@ class ExperienceReviewDialog(QtWidgets.QDialog):
         self._current_id = cand.id
         self._reload()
         self._notice.setText(tr("experience.status_changed", self._status_label(status)))
+
+    def _delete_current(self):
+        cand = self._selected_candidate()
+        if not cand or cand.status != "rejected":
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            tr("experience.delete_confirm_title"),
+            tr("experience.delete_confirm_text", cand.title or cand.id),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        self._store.delete_candidate(cand.id)
+        self._current_id = ""
+        self._reload()
+        self._notice.setText(tr("experience.deleted"))
+
+    def _export_curated_experiences(self):
+        stamp = time.strftime("%Y%m%d", time.localtime())
+        default_path = str(self._store.db_path.parent / "exports" / f"curated_experiences_{stamp}.md")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            tr("experience.export_curated_title"),
+            default_path,
+            "Markdown (*.md);;Text (*.txt)",
+        )
+        if not path:
+            return
+        try:
+            stats = self._store.export_curated_experiences(path)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                tr("experience.export_curated_title"),
+                tr("experience.export_curated_failed", e),
+            )
+            return
+        self._notice.setText(
+            tr(
+                "experience.export_curated_done",
+                stats.get("semantic_count", 0),
+                stats.get("procedural_count", 0),
+                path,
+            )
+        )

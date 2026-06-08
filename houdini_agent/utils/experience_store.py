@@ -219,55 +219,233 @@ class ExperienceCandidateStore:
         self._conn().commit()
         return cur.rowcount > 0
 
+    def delete_candidate(self, candidate_id: str) -> bool:
+        cur = self._conn().execute(
+            "DELETE FROM experience_candidates WHERE id=?",
+            (candidate_id,),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def export_curated_experiences(self, output_path: str) -> Dict[str, int]:
+        """Export git-friendly reviewed/reflected experience without raw chat context."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        allowed_categories = {"command", "debug", "pitfall", "workflow", "knowledge", "general"}
+        semantic_records = [
+            rec for rec in self.memory_store.get_all_semantic()
+            if rec.category in allowed_categories
+            and int(rec.abstraction_level or 0) in (2, 3)
+            and float(rec.confidence or 0.0) >= 0.55
+        ]
+        semantic_records.sort(
+            key=lambda r: (
+                0 if r.category in ("workflow", "pitfall", "debug") else 1,
+                -float(r.confidence or 0.0),
+                str(r.rule or ""),
+            )
+        )
+
+        promoted_candidates = {
+            c.promoted_memory_id: c
+            for c in self.list_candidates(status="promoted", limit=1000)
+            if c.promoted_memory_id
+        }
+
+        procedural_records = [
+            rec for rec in self.memory_store.get_all_procedural()
+            if "review_promoted" in (rec.conditions or [])
+        ]
+
+        generated_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        lines = [
+            "# Houdini Agent Curated Experiences",
+            "",
+            f"- Generated: {generated_at}",
+            f"- Semantic experiences: {len(semantic_records)}",
+            f"- Reviewed workflow strategies: {len(procedural_records)}",
+            "",
+            "> This export intentionally excludes raw chat context, embeddings, episodic action logs, user profile, and personal preferences.",
+            "",
+            "## Experience Rules",
+            "",
+        ]
+
+        current_category = ""
+        for rec in semantic_records:
+            if rec.category != current_category:
+                current_category = rec.category
+                lines.extend([f"### {current_category}", ""])
+            cand = promoted_candidates.get(rec.id)
+            title = cand.title if cand and cand.title else self._rule_title(rec.rule)
+            lines.extend([
+                f"#### {self._clean_markdown_title(title)}",
+                "",
+                f"- Category: `{rec.category}`",
+                f"- Level: `L{int(rec.abstraction_level or 0)}`",
+                f"- Confidence: `{float(rec.confidence or 0.0):.2f}`",
+                "",
+                self._clean_export_text(rec.rule),
+                "",
+            ])
+            if cand and cand.summary:
+                lines.extend(["Summary:", "", self._clean_export_text(cand.summary), ""])
+            if cand and cand.evidence:
+                lines.extend(["Evidence:", "", self._clean_export_text(cand.evidence), ""])
+
+        if procedural_records:
+            lines.extend(["## Reviewed Workflow Strategies", ""])
+            for rec in procedural_records:
+                lines.extend([
+                    f"### {self._clean_markdown_title(rec.strategy_name)}",
+                    "",
+                    f"- Priority: `{float(rec.priority or 0.0):.2f}`",
+                    f"- Success Rate: `{float(rec.success_rate or 0.0):.2f}`",
+                    "",
+                    self._clean_export_text(rec.description),
+                    "",
+                ])
+
+        path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        return {
+            "semantic_count": len(semantic_records),
+            "procedural_count": len(procedural_records),
+        }
+
+    @classmethod
+    def _clean_export_text(cls, text: str) -> str:
+        text = cls._strip_process_noise(text or "")
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return text or "-"
+
+    @classmethod
+    def _rule_title(cls, rule: str) -> str:
+        text = cls._clean_export_text(rule)
+        text = re.sub(r"^(?:Houdini\s*)?(?:调试经验|工作流经验|工作流|经验)[:：]\s*", "", text)
+        for sep in ("。", "\n", "；", ";"):
+            if sep in text:
+                text = text.split(sep, 1)[0]
+                break
+        return cls._limit_text(text, 56) or "Experience"
+
+    @staticmethod
+    def _clean_markdown_title(text: str) -> str:
+        text = re.sub(r"[#`*_<>]+", "", text or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        return text[:80] or "Experience"
+
     # ------------------------------------------------------------------
     # Candidate extraction
     # ------------------------------------------------------------------
 
     def create_from_history(self, session_id: str, history: List[dict]) -> Optional[ExperienceCandidate]:
+        candidates = self.create_many_from_history(session_id, history)
+        return candidates[0] if candidates else None
+
+    def create_many_from_history(self, session_id: str, history: List[dict]) -> List[ExperienceCandidate]:
         messages = [m for m in (history or []) if m.get("role") in ("user", "assistant", "tool")]
         if not messages:
-            return None
+            return []
 
-        distilled = self._distill_experience(messages)
-        if not distilled:
-            return None
+        distilled_items = self._distill_experiences(messages)
+        if not distilled_items:
+            return []
 
-        signal_type = distilled["signal_type"]
-        category = distilled["category"]
-        level = distilled["abstraction_level"]
-        confidence = distilled["confidence"]
-        title = distilled["title"]
-        summary = distilled["summary"]
-        decision = distilled["decision"]
-        proposed_rule = distilled["proposed_rule"]
-        context = distilled["context"]
-        evidence = distilled["evidence"]
-        promotion_notes = distilled["promotion_notes"]
-        quality_score = distilled["quality_score"]
+        created: List[ExperienceCandidate] = []
+        for distilled in distilled_items:
+            proposed_rule = distilled["proposed_rule"]
+            existing = self._find_existing(session_id, proposed_rule)
+            if existing:
+                created.append(existing)
+                continue
 
-        existing = self._find_existing(session_id, proposed_rule)
-        if existing:
-            return existing
+            candidate = ExperienceCandidate(
+                session_id=session_id,
+                title=distilled["title"],
+                signal_type=distilled["signal_type"],
+                summary=distilled["summary"],
+                context=distilled["context"],
+                decision=distilled["decision"],
+                proposed_rule=proposed_rule,
+                category=distilled["category"],
+                abstraction_level=distilled["abstraction_level"],
+                confidence=distilled["confidence"],
+                status="later" if distilled["quality_score"] < 0.55 else "candidate",
+                source_range={"start": max(0, len(messages) - 10), "end": len(messages) - 1},
+                evidence=distilled["evidence"],
+                promotion_notes=distilled["promotion_notes"],
+                quality_score=distilled["quality_score"],
+            )
+            self.add_candidate(candidate)
+            created.append(candidate)
+        return created
 
-        candidate = ExperienceCandidate(
-            session_id=session_id,
-            title=title,
-            signal_type=signal_type,
-            summary=summary,
-            context=context,
-            decision=decision,
-            proposed_rule=proposed_rule,
-            category=category,
-            abstraction_level=level,
-            confidence=confidence,
-            status="later" if quality_score < 0.55 else "candidate",
-            source_range={"start": max(0, len(messages) - 10), "end": len(messages) - 1},
-            evidence=evidence,
-            promotion_notes=promotion_notes,
-            quality_score=quality_score,
-        )
-        self.add_candidate(candidate)
-        return candidate
+    def _distill_experiences(self, messages: List[dict]) -> List[Dict[str, object]]:
+        base = self._distill_experience(messages)
+        if not base:
+            return []
+
+        round_messages = self._latest_round(messages)
+        context = self._messages_to_text(round_messages[-14:], max_chars=5200)
+        atomic_rules = self._extract_atomic_experience_rules(context)
+        if not atomic_rules:
+            return [base]
+
+        items = []
+        seen = set()
+        for idx, rule_text in enumerate(atomic_rules[:6], 1):
+            abstract_rule = self._abstract_experience_text(rule_text)
+            if len(abstract_rule) < 24:
+                continue
+            signal_type, category, level, inferred_confidence = self._infer_signal(abstract_rule)
+            if signal_type == "pattern":
+                signal_type = base["signal_type"]
+                category = base["category"]
+                level = base["abstraction_level"]
+            validation = self._extract_labeled_value(context, ("验证", "结果", "完成", "verified", "validation", "success"))
+            proposed_rule = self._compose_rule(
+                "Houdini 调试经验" if signal_type == "correction" else "Houdini 工作流经验",
+                problem=base.get("title", "") or base.get("summary", ""),
+                cause="",
+                action=abstract_rule,
+                validation=validation,
+            )
+            proposed_rule = self._strip_process_noise(proposed_rule)
+            if self._looks_like_raw_reasoning(proposed_rule):
+                continue
+            key = re.sub(r"\W+", "", proposed_rule.lower())[:180]
+            if key in seen:
+                continue
+            seen.add(key)
+            item = dict(base)
+            item.update(
+                {
+                    "signal_type": signal_type,
+                    "category": category,
+                    "abstraction_level": min(level, 3),
+                    "confidence": min(0.96, max(base["confidence"], inferred_confidence)),
+                    "title": self._build_title(abstract_rule, abstract_rule),
+                    "summary": self._compose_atomic_summary(abstract_rule, validation),
+                    "decision": self._build_distilled_decision(
+                        signal_type,
+                        category,
+                        min(level, 3),
+                        min(0.96, max(base["confidence"], inferred_confidence)),
+                        True,
+                        max(base["quality_score"], 0.66),
+                        ["原子经验候选", "已从会话过程抽象为可复用原则"],
+                    ),
+                    "proposed_rule": proposed_rule,
+                    "context": self._compose_context("", [rule_text], context),
+                    "evidence": self._limit_text(rule_text, 320),
+                    "promotion_notes": "按单条经验审阅；拒绝后保留在已拒绝列表，可回看并手动删除。",
+                    "quality_score": max(base["quality_score"], 0.66),
+                }
+            )
+            items.append(item)
+
+        return items or [base]
 
     def _distill_experience(self, messages: List[dict]) -> Optional[Dict[str, object]]:
         round_messages = self._latest_round(messages)
@@ -312,6 +490,13 @@ class ExperienceCandidateStore:
             return None
 
         confidence = min(0.96, max(0.35, base_confidence + (quality_score - 0.55) * 0.28))
+        action_source = fix or self._join_evidence(evidence, 3)
+        abstract_action = self._abstract_experience_text(action_source)
+        if not abstract_action and problem:
+            abstract_action = (
+                "Summarize the reusable principle for this scenario, then keep only "
+                "the scenario, repair principle, and validation method."
+            )
         if signal_type == "preference":
             proposed_rule = self._limit_text(f"用户偏好：{problem}", 520)
         elif signal_type == "correction":
@@ -319,7 +504,7 @@ class ExperienceCandidateStore:
                 "Houdini 调试经验",
                 problem=problem,
                 cause=cause,
-                action=fix or self._join_evidence(evidence, 2),
+                action=abstract_action,
                 validation=validation,
             )
         else:
@@ -327,7 +512,7 @@ class ExperienceCandidateStore:
                 "Houdini 工作流经验",
                 problem=problem,
                 cause=cause,
-                action=fix or self._join_evidence(evidence, 3),
+                action=abstract_action,
                 validation=validation,
             )
 
@@ -336,7 +521,7 @@ class ExperienceCandidateStore:
             return None
 
         title = self._build_title(problem, fix or cause or proposed_rule)
-        summary = self._compose_summary(problem, cause, fix, validation, evidence)
+        summary = self._compose_summary(problem, cause, abstract_action, validation, evidence)
         promotion_notes = self._build_promotion_notes(quality_score, quality_reasons)
         decision = self._build_distilled_decision(
             signal_type,
@@ -364,6 +549,65 @@ class ExperienceCandidateStore:
             "promotion_notes": promotion_notes,
             "quality_score": quality_score,
         }
+
+    @classmethod
+    def _extract_atomic_experience_rules(cls, text: str) -> List[str]:
+        """Extract review units as reusable lessons, not whole chat sessions."""
+        text = cls._strip_process_noise(text or "")
+        lines = []
+        label_re = re.compile(
+            r"(?:经验|原则|原理|复盘|反省|教训|修复原理|正确做法|通用做法|避免|以后|lesson|principle|rule|takeaway|fix principle)\s*[:：\-]\s*(.+)",
+            flags=re.I,
+        )
+        for raw in re.split(r"[\n\r]+|(?<=[。；;.!?])\s+", text):
+            line = cls._clean_evidence_line(raw)
+            if len(line) < 12 or len(line) > 360:
+                continue
+            m = label_re.search(line)
+            if m:
+                lines.append(m.group(1).strip())
+                continue
+            lower = line.lower()
+            if any(k in lower for k in ("should", "must", "avoid", "prefer", "verify", "validate")):
+                if any(k in lower for k in ("workflow", "houdini", "node", "vex", "sop", "error", "bug", "fix")):
+                    lines.append(line)
+                    continue
+            if any(k in line for k in ("应当", "必须", "不要", "避免", "优先", "先验证", "再验证", "正确做法")):
+                lines.append(line)
+
+        unique = []
+        seen = set()
+        for line in lines:
+            rule = cls._abstract_experience_text(line)
+            key = re.sub(r"\W+", "", rule.lower())[:140]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(rule)
+        return unique
+
+    @classmethod
+    def _abstract_experience_text(cls, text: str) -> str:
+        text = cls._strip_process_noise(text or "")
+        text = re.sub(r"^(?:assistant|user|tool)\s*:\s*", "", text.strip(), flags=re.I)
+        text = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", text)
+        text = re.sub(r"\[(?:Plan Confirmed|auto visual checkpoint)[^\]]*\]\s*", "", text, flags=re.I)
+        text = re.sub(r"\bI\s+(?:will|would|should|need to|have to)\b", "The workflow should", text, flags=re.I)
+        text = re.sub(r"\bI\s+(?:created|changed|fixed|verified|used)\b", "Use", text, flags=re.I)
+        text = re.sub(r"(?:我已经|我会|我先|我需要|我们已经|这里已经)", "", text)
+        text = re.sub(r"\s+", " ", text).strip(" ：:-")
+        noise_markers = ("[first principles]", "[understand]", "[plan]", "<think>", "updated todo")
+        lower = text.lower()
+        if any(m in lower for m in noise_markers):
+            return ""
+        return cls._limit_text(text, 260)
+
+    @classmethod
+    def _compose_atomic_summary(cls, rule: str, validation: str) -> str:
+        lines = [f"经验原则：{cls._limit_text(rule, 260)}"]
+        if validation:
+            lines.append(f"验证方式：{cls._limit_text(validation, 220)}")
+        return "\n".join(lines)
 
     @staticmethod
     def _content_to_text(content) -> str:

@@ -6,6 +6,14 @@ An AI-powered assistant for SideFX Houdini, featuring autonomous multi-turn tool
 
 Built on the **OpenAI Function Calling** protocol, the agent can read node networks, create/modify/connect nodes, run VEX wrangles, execute system shell commands, search the web, query local documentation, create structured execution plans, learn from past interactions, and be extended via plugins — all within an iterative agent loop. A centralized **ToolRegistry** unifies core tools, skills, and plugin tools with mode-based access control.
 
+## Recent Updates
+
+- Chat records now have per-message delete actions for persisted user and assistant entries; deleting a record updates the active conversation history, session cache, and restored view.
+- Chat rendering now reflows long user messages, AI responses, code blocks, and API error/status text when the window is resized, preventing horizontal clipping.
+- Sent image thumbnails and `capture_viewport` snapshots are preserved in the chat timeline and can be clicked to open the full-size preview dialog after sending.
+- Vision-capable agent runs can attach automatic viewport checkpoints after scene-changing phases, allowing the model to verify Houdini results visually without capturing after every single edit.
+- Workflow experience review now supports multi-candidate extraction, hiding/showing rejected items, deleting rejected candidates, and exporting curated semantic/procedural experiences to Markdown.
+
 ## Core Features
 
 ### Agent Loop

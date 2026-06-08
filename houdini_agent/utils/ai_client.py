@@ -1513,6 +1513,18 @@ class AIClient:
         'create_node', 'create_nodes_batch', 'connect_nodes',
         'set_node_parameter', 'create_wrangle_node',
     })
+    _VISUAL_CHECKPOINT_TOOLS = frozenset({
+        'create_node', 'create_nodes_batch', 'connect_nodes',
+        'set_node_parameter', 'batch_set_parameters', 'create_wrangle_node',
+        'delete_node', 'copy_node', 'set_display_flag',
+        'layout_nodes', 'create_network_box', 'add_nodes_to_box',
+        'execute_python', 'run_skill', 'undo_redo',
+    })
+    _VISUAL_PHASE_COMPLETE_TOOLS = frozenset({
+        'verify_and_summarize',
+        'layout_nodes',
+        'set_display_flag',
+    })
 
     @staticmethod
     def _paginate_result(text: str, max_lines: int = 50) -> str:
@@ -3914,6 +3926,7 @@ class AIClient:
         # ★ Cursor 风格：同轮去重缓存
         # 如果 AI 在同一 turn 中用相同参数调用相同工具，直接返回缓存结果
         # key: "tool_name:sorted_args_json" → value: result dict
+        pending_visual_checkpoint_tools = []
         _turn_dedup_cache: Dict[str, dict] = {}
         
         # ★ 消息清洗 dirty 标志（避免每轮都 O(n) 遍历消息列表）
@@ -4569,6 +4582,103 @@ class AIClient:
                         ]
                     })
                     print(f"[AI Client] 📸 视口截图已注入消息 ({len(_img_b64)//1024}KB base64)")
+
+            # Auto visual checkpoint:
+            # Scene-changing tools only mark the viewport as needing review.
+            # We take the screenshot when a phase-completion tool succeeds, so
+            # the model verifies stage results instead of every individual edit.
+            if any(
+                pc[1] == 'capture_viewport'
+                and isinstance(results_ordered[_ci], dict)
+                and results_ordered[_ci].get('success')
+                for _ci, pc in enumerate(parsed_calls)
+            ):
+                pending_visual_checkpoint_tools = []
+
+            if (
+                supports_vision
+                and not self._stop_event.is_set()
+                and parsed_calls
+                and not any(pc[1] == 'capture_viewport' for pc in parsed_calls)
+            ):
+                _round_changed_tools = []
+                _phase_complete_tools = []
+                for _ri, (_tid, _tn, _ta, _tc) in enumerate(parsed_calls):
+                    _rr = results_ordered[_ri]
+                    if (
+                        _tn in self._VISUAL_CHECKPOINT_TOOLS
+                        and isinstance(_rr, dict)
+                        and _rr.get('success')
+                    ):
+                        _round_changed_tools.append(_tn)
+                    if (
+                        _tn in self._VISUAL_PHASE_COMPLETE_TOOLS
+                        and isinstance(_rr, dict)
+                        and _rr.get('success')
+                    ):
+                        _phase_complete_tools.append(_tn)
+
+                if _round_changed_tools:
+                    pending_visual_checkpoint_tools.extend(_round_changed_tools)
+
+                if pending_visual_checkpoint_tools and _phase_complete_tools:
+                    _auto_args = {"width": 960, "height": 540}
+                    _auto_args_for_ui = {**_auto_args, "_auto": True}
+                    if on_tool_call:
+                        on_tool_call('capture_viewport', _auto_args_for_ui)
+                    try:
+                        _auto_result = self._tool_executor('capture_viewport', **_auto_args)
+                    except Exception as _auto_e:
+                        _auto_result = {
+                            "success": False,
+                            "error": f"Auto visual checkpoint failed: {_auto_e}",
+                        }
+
+                    tool_calls_history.append({
+                        'tool_name': 'capture_viewport',
+                        'arguments': {
+                            **_auto_args_for_ui,
+                            "after_tools": pending_visual_checkpoint_tools,
+                            "phase_complete_tools": _phase_complete_tools,
+                        },
+                        'result': _auto_result,
+                    })
+                    if on_tool_result:
+                        on_tool_result('capture_viewport', _auto_args_for_ui, _auto_result)
+
+                    if isinstance(_auto_result, dict) and _auto_result.get('_viewport_image'):
+                        _img_b64 = _auto_result['_viewport_image']
+                        _img_mt = _auto_result.get('_image_media_type', 'image/jpeg')
+                        _reason = ", ".join(dict.fromkeys(pending_visual_checkpoint_tools))
+                        _phase = ", ".join(dict.fromkeys(_phase_complete_tools))
+                        working_messages.append({
+                            'role': 'user',
+                            'content': [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "[auto visual checkpoint attached after phase completion: "
+                                        f"{_phase}. Changed tools since last visual check: {_reason}. "
+                                        "First inspect the screenshot for obvious visual "
+                                        "problems, scale/framing issues, missing geometry, or incorrect "
+                                        "display output. If it looks correct, continue or finalize; if not, "
+                                        "fix the Houdini network and verify again.]"
+                                    ),
+                                },
+                                {"type": "image_url", "image_url": {"url": f"data:{_img_mt};base64,{_img_b64}"}},
+                            ],
+                        })
+                        print(
+                            f"[AI Client] Auto visual checkpoint injected at phase completion "
+                            f"({_phase}; {len(pending_visual_checkpoint_tools)} pending scene-changing tool(s)) "
+                            f"({len(_img_b64)//1024}KB base64)"
+                        )
+                        pending_visual_checkpoint_tools = []
+                    elif isinstance(_auto_result, dict):
+                        print(
+                            "[AI Client] Auto visual checkpoint skipped: "
+                            f"{_auto_result.get('error') or _auto_result.get('result')}"
+                        )
 
             if should_break_tool_limit:
                 return {

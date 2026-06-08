@@ -864,6 +864,8 @@ class ClickableImageLabel(QtWidgets.QLabel):
         super().__init__(parent)
         self._full_pixmap = full_pixmap
         self.setPixmap(thumb_pixmap)
+        self.setFixedSize(thumb_pixmap.size())
+        self.setMinimumSize(thumb_pixmap.size())
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setToolTip(tr('img.click_zoom'))
 
@@ -884,11 +886,14 @@ class UserMessage(QtWidgets.QWidget):
 
     _COLLAPSED_MAX_LINES = 2  # 折叠时显示的最大行数
 
+    deleteRequested = QtCore.Signal(int, int)
+
     _SOFT_WRAP_EVERY = 18
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(0)
+        self._history_range = None
         self._full_text = text
         self._collapsed = False  # 初始状态由 _maybe_collapse 决定
 
@@ -904,9 +909,9 @@ class UserMessage(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Maximum,
             QtWidgets.QSizePolicy.Preferred,
         )
-        container_layout = QtWidgets.QVBoxLayout(self._container)
-        container_layout.setContentsMargins(12, 8, 12, 4)
-        container_layout.setSpacing(2)
+        self._container_layout = QtWidgets.QVBoxLayout(self._container)
+        self._container_layout.setContentsMargins(12, 8, 12, 4)
+        self._container_layout.setSpacing(2)
 
         # ---- 内容标签 ----
         self.content = QtWidgets.QLabel(self._soft_wrap_text(text))
@@ -915,7 +920,7 @@ class UserMessage(QtWidgets.QWidget):
         self.content.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.content.setObjectName("userMsgText")
         self.content.setMinimumWidth(0)
-        container_layout.addWidget(self.content)
+        self._container_layout.addWidget(self.content)
 
         # ---- 展开/收起 按钮 ----
         self._toggle_btn = QtWidgets.QPushButton()
@@ -925,12 +930,21 @@ class UserMessage(QtWidgets.QWidget):
         self._toggle_btn.setObjectName("userMsgToggle")
         self._toggle_btn.clicked.connect(self._toggle_collapse)
         self._toggle_btn.setVisible(False)  # 默认隐藏，_maybe_collapse 决定
-        container_layout.addWidget(self._toggle_btn)
+        self._container_layout.addWidget(self._toggle_btn)
 
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addStretch(1)
+        self._delete_btn = QtWidgets.QPushButton("x")
+        self._delete_btn.setFixedSize(20, 20)
+        self._delete_btn.setFlat(True)
+        self._delete_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._delete_btn.setToolTip("Delete record")
+        self._delete_btn.setObjectName("msgDeleteBtn")
+        self._delete_btn.clicked.connect(self._request_delete)
+        self._delete_btn.setVisible(False)
+        row.addWidget(self._delete_btn, 0, QtCore.Qt.AlignTop)
         row.addWidget(self._container, 0, QtCore.Qt.AlignRight)
         layout.addLayout(row)
 
@@ -950,6 +964,21 @@ class UserMessage(QtWidgets.QWidget):
         self.content.setMaximumWidth(content_max)
         self.content.setMinimumWidth(0)
         self._container.updateGeometry()
+
+    def add_image_widgets(self, image_widgets: list):
+        """Add clickable thumbnails inside the message bubble."""
+        if not image_widgets:
+            return
+        img_row = QtWidgets.QHBoxLayout()
+        img_row.setSpacing(4)
+        img_row.setContentsMargins(0, 4, 0, 4)
+        for widget in image_widgets:
+            widget.setParent(self._container)
+            img_row.addWidget(widget)
+        img_row.addStretch()
+        insert_at = max(1, self._container_layout.indexOf(self._toggle_btn))
+        self._container_layout.insertLayout(insert_at, img_row)
+        QtCore.QTimer.singleShot(0, self._update_bubble_width)
 
     @classmethod
     def _soft_wrap_text(cls, text: str) -> str:
@@ -1004,6 +1033,19 @@ class UserMessage(QtWidgets.QWidget):
         else:
             self._apply_expanded()
 
+    def set_history_range(self, start: int, end: int):
+        if start is None or end is None or start < 0 or end <= start:
+            self._history_range = None
+            self._delete_btn.setVisible(False)
+            return
+        self._history_range = (start, end)
+        self._delete_btn.setVisible(True)
+
+    def _request_delete(self):
+        if not self._history_range:
+            return
+        self.deleteRequested.emit(self._history_range[0], self._history_range[1])
+
 
 # ============================================================
 # AI 回复块（重构版）
@@ -1021,9 +1063,12 @@ class AIResponse(QtWidgets.QWidget):
     createWrangleRequested = QtCore.Signal(str)  # vex_code
     nodePathClicked = QtCore.Signal(str)         # 节点路径被点击
     
+    deleteRequested = QtCore.Signal(int, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(0)
+        self._history_range = None
         self._start_time = time.time()
         self._content = ""
         self._has_thinking = False
@@ -1099,6 +1144,10 @@ class AIResponse(QtWidgets.QWidget):
         
         self.status_label = QtWidgets.QLabel(tr('thinking.init'))
         self.status_label.setObjectName("aiStatusLabel")
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setWordWrap(True)
+        self.status_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.status_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         status_row.addWidget(self.status_label)
         status_row.addStretch()
         
@@ -1110,6 +1159,16 @@ class AIResponse(QtWidgets.QWidget):
         self._copy_btn.setObjectName("aiCopyBtn")
         self._copy_btn.clicked.connect(self._copy_content)
         status_row.addWidget(self._copy_btn)
+
+        self._delete_btn = QtWidgets.QPushButton("x")
+        self._delete_btn.setFixedSize(20, 20)
+        self._delete_btn.setFlat(True)
+        self._delete_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._delete_btn.setToolTip("Delete record")
+        self._delete_btn.setObjectName("msgDeleteBtn")
+        self._delete_btn.clicked.connect(self._request_delete)
+        self._delete_btn.setVisible(False)
+        status_row.addWidget(self._delete_btn)
         
         self._summary_layout.addLayout(status_row)
         
@@ -1170,6 +1229,7 @@ class AIResponse(QtWidgets.QWidget):
 
     def _sync_content_widths(self):
         width = self._available_content_width()
+        self.status_label.setMaximumWidth(width)
         self.content_label.document().setTextWidth(width)
         self.content_label.setMaximumWidth(width)
         for child in self._frozen_container.findChildren(QtWidgets.QWidget):
@@ -1195,6 +1255,19 @@ class AIResponse(QtWidgets.QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_content_widths()
+
+    def set_history_range(self, start: int, end: int):
+        if start is None or end is None or start < 0 or end <= start:
+            self._history_range = None
+            self._delete_btn.setVisible(False)
+            return
+        self._history_range = (start, end)
+        self._delete_btn.setVisible(True)
+
+    def _request_delete(self):
+        if not self._history_range:
+            return
+        self.deleteRequested.emit(self._history_range[0], self._history_range[1])
     
     def add_thinking(self, text: str):
         """添加思考内容"""
@@ -1236,7 +1309,8 @@ class AIResponse(QtWidgets.QWidget):
             tool_name = text[6:].strip()
             self._add_tool_call(tool_name)
         else:
-            self.status_label.setText(text)
+            self.status_label.setText(UserMessage._soft_wrap_text(text))
+            QtCore.QTimer.singleShot(0, self._sync_content_widths)
     
     def _add_tool_call(self, tool_name: str):
         """添加工具调用"""
@@ -1602,9 +1676,12 @@ class StatusLine(QtWidgets.QLabel):
     """简洁状态行"""
     
     def __init__(self, text: str = "", parent=None):
-        super().__init__(text, parent)
+        super().__init__(UserMessage._soft_wrap_text(text), parent)
         self.setObjectName("statusLine")
+        self.setMinimumWidth(0)
         self.setWordWrap(True)
+        self.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
 
 
 # ============================================================
