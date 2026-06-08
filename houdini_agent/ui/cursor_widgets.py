@@ -1131,6 +1131,27 @@ class AIResponse(QtWidgets.QWidget):
         self.details_layout = QtWidgets.QVBoxLayout()
         self.details_layout.setSpacing(2)
         layout.addLayout(self.details_layout)
+
+    def _available_content_width(self) -> int:
+        margins = self._summary_layout.contentsMargins()
+        width = self.summary_frame.width() - margins.left() - margins.right() - 4
+        return max(120, width)
+
+    def _sync_content_widths(self):
+        width = self._available_content_width()
+        self.content_label.document().setTextWidth(width)
+        self.content_label.setMaximumWidth(width)
+        for child in self._frozen_container.findChildren(QtWidgets.QWidget):
+            name = child.objectName()
+            if name in ("richText", "richImage") or isinstance(child, CodeBlockWidget):
+                child.setMaximumWidth(width)
+                child.updateGeometry()
+        self._frozen_container.updateGeometry()
+        self._auto_resize_content()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_content_widths()
     
     def add_thinking(self, text: str):
         """添加思考内容"""
@@ -1363,6 +1384,7 @@ class AIResponse(QtWidgets.QWidget):
                 )
                 lbl.setText(seg[1])
                 lbl.setObjectName("richText")
+                lbl.setMaximumWidth(self._available_content_width())
                 lbl.linkActivated.connect(self._on_link_activated)
                 self._frozen_layout.addWidget(lbl)
             elif seg[0] == 'code':
@@ -1370,11 +1392,13 @@ class AIResponse(QtWidgets.QWidget):
                 cb.createWrangleRequested.connect(self.createWrangleRequested.emit)
                 # 代码块与前后段落之间需要额外间距
                 cb.setContentsMargins(0, 6, 0, 6)
+                cb.setMaximumWidth(self._available_content_width())
                 self._frozen_layout.addWidget(cb)
             elif seg[0] == 'image':
                 img_lbl = QtWidgets.QLabel()
                 img_lbl.setObjectName("richImage")
                 img_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                img_lbl.setMaximumWidth(self._available_content_width())
                 img_lbl.setText(
                     f'<div style="margin:4px 0;">'
                     f'<img src="{html.escape(seg[1])}" '
@@ -1388,6 +1412,7 @@ class AIResponse(QtWidgets.QWidget):
         if not self._frozen_container.isVisible():
             self._frozen_container.setVisible(True)
         self._frozen_segments.append(text)
+        self._sync_content_widths()
     
     def set_content(self, text: str):
         """设置内容（一次性，非流式场景，如历史恢复）
