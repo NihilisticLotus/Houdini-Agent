@@ -7,8 +7,9 @@ Header UI 构建 — 顶部设置栏（模型选择、Provider、Web/Think 开�
 """
 
 import json
+import math
 
-from houdini_agent.qt_compat import QtWidgets, QtCore
+from houdini_agent.qt_compat import QtWidgets, QtCore, QtGui
 from houdini_agent.utils.ai_client import normalize_custom_chat_url, normalize_custom_models_url
 from .i18n import tr, get_language, set_language, language_changed
 from .theme_engine import ThemeEngine
@@ -37,6 +38,12 @@ def _normalize_custom_profiles(profiles: list) -> list:
             models = _split_custom_models(models)
         else:
             models = [str(m).strip() for m in models if str(m).strip()]
+        enabled_models = profile.get('enabled_models') or []
+        if isinstance(enabled_models, str):
+            enabled_models = _split_custom_models(enabled_models)
+        else:
+            enabled_models = [str(m).strip() for m in enabled_models if str(m).strip()]
+        enabled_models = [m for m in enabled_models if m in models]
         try:
             context_limit = int(profile.get('context_limit') or 128000)
         except (TypeError, ValueError):
@@ -46,6 +53,7 @@ def _normalize_custom_profiles(profiles: list) -> list:
             'api_url': str(profile.get('api_url') or '').strip(),
             'api_key': str(profile.get('api_key') or '').strip(),
             'models': models,
+            'enabled_models': enabled_models,
             'context_limit': context_limit,
             'supports_vision': bool(profile.get('supports_vision', False)),
             'supports_fc': bool(profile.get('supports_fc', True)),
@@ -53,22 +61,77 @@ def _normalize_custom_profiles(profiles: list) -> list:
     return normalized
 
 
+def _visible_profile_models(profile: dict) -> list:
+    models = profile.get('models', []) or []
+    enabled_models = profile.get('enabled_models', []) or []
+    if enabled_models:
+        return [model for model in models if model in enabled_models]
+    return models
+
+
 def _flatten_custom_models(profiles: list) -> list:
     counts = {}
     for profile in profiles or []:
-        for model in profile.get('models', []):
+        for model in _visible_profile_models(profile):
             counts[model] = counts.get(model, 0) + 1
 
     models = []
     seen = set()
     for profile in profiles or []:
         profile_name = profile.get('name', 'Custom')
-        for model in profile.get('models', []):
+        for model in _visible_profile_models(profile):
             label = f"{profile_name} / {model}" if counts.get(model, 0) > 1 else model
             if label and label not in seen:
                 models.append(label)
                 seen.add(label)
     return models
+
+
+def _make_line_icon(kind: str, size: int = 18, color: str = "#d4c5b0") -> QtGui.QIcon:
+    """Create small deterministic toolbar icons that do not depend on emoji fonts."""
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(color), max(1, size // 9), QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(QtCore.Qt.NoBrush)
+    s = float(size)
+
+    if kind == "settings":
+        center = QtCore.QPointF(s / 2, s / 2)
+        painter.drawEllipse(center, s * 0.20, s * 0.20)
+        for angle in range(0, 360, 45):
+            rad = math.radians(angle)
+            inner = QtCore.QPointF(center.x() + math.cos(rad) * s * 0.31, center.y() + math.sin(rad) * s * 0.31)
+            outer = QtCore.QPointF(center.x() + math.cos(rad) * s * 0.42, center.y() + math.sin(rad) * s * 0.42)
+            painter.drawLine(inner, outer)
+    elif kind == "add":
+        painter.drawEllipse(QtCore.QRectF(s * 0.18, s * 0.18, s * 0.64, s * 0.64))
+        painter.drawLine(QtCore.QPointF(s * 0.50, s * 0.32), QtCore.QPointF(s * 0.50, s * 0.68))
+        painter.drawLine(QtCore.QPointF(s * 0.32, s * 0.50), QtCore.QPointF(s * 0.68, s * 0.50))
+    elif kind == "delete":
+        painter.drawLine(QtCore.QPointF(s * 0.32, s * 0.38), QtCore.QPointF(s * 0.68, s * 0.38))
+        painter.drawLine(QtCore.QPointF(s * 0.38, s * 0.38), QtCore.QPointF(s * 0.42, s * 0.78))
+        painter.drawLine(QtCore.QPointF(s * 0.62, s * 0.38), QtCore.QPointF(s * 0.58, s * 0.78))
+        painter.drawLine(QtCore.QPointF(s * 0.42, s * 0.78), QtCore.QPointF(s * 0.58, s * 0.78))
+        painter.drawLine(QtCore.QPointF(s * 0.43, s * 0.26), QtCore.QPointF(s * 0.57, s * 0.26))
+    elif kind == "eye":
+        eye_path = QtGui.QPainterPath()
+        eye_path.moveTo(s * 0.14, s * 0.50)
+        eye_path.cubicTo(s * 0.28, s * 0.28, s * 0.72, s * 0.28, s * 0.86, s * 0.50)
+        eye_path.cubicTo(s * 0.72, s * 0.72, s * 0.28, s * 0.72, s * 0.14, s * 0.50)
+        painter.drawPath(eye_path)
+        painter.drawEllipse(QtCore.QPointF(s * 0.50, s * 0.50), s * 0.11, s * 0.11)
+    elif kind == "refresh":
+        rect = QtCore.QRectF(s * 0.22, s * 0.22, s * 0.56, s * 0.56)
+        painter.drawArc(rect, 30 * 16, 270 * 16)
+        painter.drawLine(QtCore.QPointF(s * 0.72, s * 0.23), QtCore.QPointF(s * 0.78, s * 0.42))
+        painter.drawLine(QtCore.QPointF(s * 0.72, s * 0.23), QtCore.QPointF(s * 0.54, s * 0.29))
+
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 class HeaderMixin:
@@ -102,9 +165,11 @@ class HeaderMixin:
         row.addWidget(self.provider_combo)
         
         # Custom 配置按钮（仅在 Custom provider 时可见）
-        self.btn_custom_config = QtWidgets.QPushButton("⚙")
+        self.btn_custom_config = QtWidgets.QPushButton()
         self.btn_custom_config.setObjectName("btnCustomConfig")
         self.btn_custom_config.setFixedSize(22, 22)
+        self.btn_custom_config.setIcon(_make_line_icon("settings", 16))
+        self.btn_custom_config.setIconSize(QtCore.QSize(16, 16))
         self.btn_custom_config.setCursor(QtCore.Qt.PointingHandCursor)
         self.btn_custom_config.setToolTip("配置 Custom Model 的 URL、API Key 和模型名")
         self.btn_custom_config.setVisible(False)
@@ -251,7 +316,7 @@ class HeaderMixin:
         self._refresh_models('ollama')
         self.model_combo.setMinimumWidth(100)
         self.model_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.model_combo.setEditable(False)  # 默认不可编辑，Custom 时切换为可编辑
+        self.model_combo.setEditable(False)
         row.addWidget(self.model_combo, 1)
         
         # API Key 状态 — 紧凑指示（行内，限宽 + 省略号）
@@ -325,11 +390,11 @@ class HeaderMixin:
     def _register_custom_model_features(self, profiles: list):
         model_counts = {}
         for profile in profiles or []:
-            for model in profile.get('models', []):
+            for model in _visible_profile_models(profile):
                 model_counts[model] = model_counts.get(model, 0) + 1
         for profile in profiles or []:
             profile_name = profile.get('name', 'Custom')
-            for model in profile.get('models', []):
+            for model in _visible_profile_models(profile):
                 label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
                 self._model_context_limits[label] = profile.get('context_limit', 128000)
                 self._model_features[label] = {
@@ -523,6 +588,7 @@ class HeaderMixin:
                     'api_url': cfg.get('custom_api_url', ''),
                     'api_key': cfg.get('custom_api_key', ''),
                     'models': legacy_models,
+                    'enabled_models': _split_custom_models(cfg.get('custom_enabled_models', '')),
                     'context_limit': legacy_context_limit,
                     'supports_vision': cfg.get('custom_supports_vision', 'false').lower() == 'true',
                     'supports_fc': cfg.get('custom_supports_fc', 'true').lower() != 'false',
@@ -558,6 +624,7 @@ class HeaderMixin:
             cfg['custom_api_url'] = primary.get('api_url', '')
             cfg['custom_api_key'] = primary.get('api_key', '')
             cfg['custom_models'] = ','.join(_flatten_custom_models(profiles))
+            cfg['custom_enabled_models'] = ','.join(primary.get('enabled_models', []))
             cfg['custom_context_limit'] = str(primary.get('context_limit', 128000))
             cfg['custom_supports_vision'] = 'true' if primary.get('supports_vision', False) else 'false'
             cfg['custom_supports_fc'] = 'true' if primary.get('supports_fc', True) else 'false'
@@ -584,12 +651,12 @@ class HeaderMixin:
             print(f"[Header] 同步 Custom 配置到 Client 失败: {e}")
 
     def _on_provider_changed_custom_visibility(self):
-        """Provider 切换时更新 Custom 配置按钮可见性和模型下拉框可编辑状态"""
+        """Provider 切换时更新 Custom 配置按钮可见性。"""
         provider = self._current_provider()
         is_custom = (provider == 'custom')
         self.btn_custom_config.setVisible(is_custom)
-        # Custom 模式下允许用户直接在 model_combo 中输入模型名
-        self.model_combo.setEditable(is_custom)
+        # 模型选择始终是枚举选择；自定义模型只在配置弹窗中维护。
+        self.model_combo.setEditable(False)
         if is_custom and not self._custom_provider_config.get('api_url') and not self._custom_provider_config.get('profiles'):
             # 首次选择 Custom 且未配置，自动弹出配置对话框
             QtCore.QTimer.singleShot(100, self._open_custom_provider_dialog)
@@ -639,6 +706,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'api_url': cfg.get('api_url', ''),
             'api_key': cfg.get('api_key', ''),
             'models': cfg.get('models', []),
+            'enabled_models': cfg.get('enabled_models', []),
             'context_limit': cfg.get('context_limit', 128000),
             'supports_vision': cfg.get('supports_vision', False),
             'supports_fc': cfg.get('supports_fc', True),
@@ -674,14 +742,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         profile_row.addWidget(self._profile_combo, 1)
 
-        self._btn_add_profile = QtWidgets.QPushButton("+")
+        self._btn_add_profile = QtWidgets.QPushButton()
         self._btn_add_profile.setFixedSize(28, 28)
+        self._btn_add_profile.setIcon(_make_line_icon("add"))
+        self._btn_add_profile.setIconSize(QtCore.QSize(18, 18))
         self._btn_add_profile.setToolTip("新增一组 URL / API Key")
         self._btn_add_profile.clicked.connect(self._add_profile)
         profile_row.addWidget(self._btn_add_profile)
 
-        self._btn_delete_profile = QtWidgets.QPushButton("-")
+        self._btn_delete_profile = QtWidgets.QPushButton()
         self._btn_delete_profile.setFixedSize(28, 28)
+        self._btn_delete_profile.setIcon(_make_line_icon("delete"))
+        self._btn_delete_profile.setIconSize(QtCore.QSize(18, 18))
         self._btn_delete_profile.setToolTip("删除当前配置组")
         self._btn_delete_profile.clicked.connect(self._delete_profile)
         profile_row.addWidget(self._btn_delete_profile)
@@ -704,8 +776,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         key_row = QtWidgets.QHBoxLayout()
         key_row.setSpacing(4)
         key_row.addWidget(self._key_edit)
-        self._btn_show_key = QtWidgets.QPushButton("👁")
+        self._btn_show_key = QtWidgets.QPushButton()
         self._btn_show_key.setFixedSize(28, 28)
+        self._btn_show_key.setIcon(_make_line_icon("eye"))
+        self._btn_show_key.setIconSize(QtCore.QSize(18, 18))
+        self._btn_show_key.setToolTip("显示 / 隐藏 API Key")
         self._btn_show_key.setCheckable(True)
         self._btn_show_key.toggled.connect(
             lambda checked: self._key_edit.setEchoMode(
@@ -715,21 +790,27 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         key_row.addWidget(self._btn_show_key)
         form.addRow("API Key:", key_row)
 
-        # 模型名列表：一行一个；粘贴逗号或分号分隔的列表也可以。
-        self._models_edit = QtWidgets.QPlainTextEdit()
-        self._models_edit.setMinimumHeight(96)
-        self._models_edit.setSizePolicy(
+        # 模型列表：勾选项会显示在主界面；全不勾选表示全部显示。
+        self._models_list = QtWidgets.QListWidget()
+        self._models_list.setMinimumHeight(96)
+        self._models_list.setToolTip("勾选后仅在主界面显示勾选模型；全不勾选则显示全部模型")
+        self._models_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._models_list.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
-        self._models_edit.setPlaceholderText("glm-4.5\nglm-4.7\nglm-5.1")
-        self._models_edit.setPlainText('\n'.join(active_profile.get('models', [])))
+        self._set_model_names(
+            active_profile.get('models', []),
+            active_profile.get('enabled_models', []),
+        )
 
         models_row = QtWidgets.QHBoxLayout()
         models_row.setSpacing(4)
-        models_row.addWidget(self._models_edit, 1)
+        models_row.addWidget(self._models_list, 1)
 
-        self._btn_fetch_models = QtWidgets.QPushButton("⟳")
+        self._btn_fetch_models = QtWidgets.QPushButton()
         self._btn_fetch_models.setFixedSize(28, 28)
+        self._btn_fetch_models.setIcon(_make_line_icon("refresh"))
+        self._btn_fetch_models.setIconSize(QtCore.QSize(18, 18))
         self._btn_fetch_models.setToolTip(tr("custom.fetch_models"))
         self._btn_fetch_models.clicked.connect(self._fetch_models)
         models_row.addWidget(self._btn_fetch_models)
@@ -790,15 +871,23 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 color: #ddd;
             }
             QLabel { color: #ccc; }
-            QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
+            QLineEdit, QSpinBox, QComboBox, QListWidget {
                 background: #2a2a2a;
                 color: #eee;
                 border: 1px solid #444;
                 border-radius: 4px;
                 padding: 4px 8px;
             }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus {
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QListWidget:focus {
                 border-color: #6a9eff;
+            }
+            QListWidget::item {
+                min-height: 22px;
+                padding: 1px 2px;
+            }
+            QListWidget::item:selected {
+                background: rgba(58,90,138,90);
+                color: #fff;
             }
             QComboBox::drop-down {
                 border: none;
@@ -840,6 +929,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'api_url': self._url_edit.text().strip(),
             'api_key': self._key_edit.text().strip(),
             'models': self._model_names(),
+            'enabled_models': self._enabled_model_names(),
             'context_limit': self._ctx_spin.value(),
             'supports_vision': self._chk_vision.isChecked(),
             'supports_fc': self._chk_fc.isChecked(),
@@ -856,7 +946,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             self._profile_combo.setCurrentText(profile.get('name', f'Custom {index + 1}'))
             self._url_edit.setText(profile.get('api_url', ''))
             self._key_edit.setText(profile.get('api_key', ''))
-            self._set_model_names(profile.get('models', []))
+            self._set_model_names(profile.get('models', []), profile.get('enabled_models', []))
             self._ctx_spin.setValue(profile.get('context_limit', 128000))
             self._chk_vision.setChecked(profile.get('supports_vision', False))
             self._chk_fc.setChecked(profile.get('supports_fc', True))
@@ -878,6 +968,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'api_url': '',
             'api_key': '',
             'models': [],
+            'enabled_models': [],
             'context_limit': 128000,
             'supports_vision': False,
             'supports_fc': True,
@@ -908,19 +999,31 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._load_profile(self._profile_index)
 
     def _model_names(self) -> list:
-        """Return model names from the multiline model editor."""
-        text = self._models_edit.toPlainText()
+        """Return all model names from the model list."""
         names = []
         seen = set()
-        for raw in text.replace(';', ',').replace('\n', ',').split(','):
-            name = raw.strip()
+        for row in range(self._models_list.count()):
+            name = self._models_list.item(row).text().strip()
             if name and name not in seen:
                 names.append(name)
                 seen.add(name)
         return names
 
-    def _set_model_names(self, models: list):
-        """Replace the multiline model editor content with one model per line."""
+    def _enabled_model_names(self) -> list:
+        """Return checked model names. Empty means all models are visible."""
+        names = []
+        for row in range(self._models_list.count()):
+            item = self._models_list.item(row)
+            if item.checkState() == QtCore.Qt.Checked:
+                names.append(item.text().strip())
+        return [name for name in names if name]
+
+    def _test_model_names(self) -> list:
+        enabled = self._enabled_model_names()
+        return enabled or self._model_names()
+
+    def _set_model_names(self, models: list, enabled_models: list = None):
+        """Replace the model list and restore checked visible-model selections."""
         unique = []
         seen = set()
         for model in models:
@@ -928,7 +1031,13 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             if name and name not in seen:
                 unique.append(name)
                 seen.add(name)
-        self._models_edit.setPlainText('\n'.join(unique))
+        enabled_set = set(enabled_models or [])
+        self._models_list.clear()
+        for name in unique:
+            item = QtWidgets.QListWidgetItem(name)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked if name in enabled_set else QtCore.Qt.Unchecked)
+            self._models_list.addItem(item)
 
     def _fetch_models(self):
         """从 API 获取可用模型列表并填充到模型列表"""
@@ -957,7 +1066,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 data = resp.json()
                 model_ids = [m.get('id', '') for m in data.get('data', []) if m.get('id')]
                 if model_ids:
-                    self._set_model_names(sorted(model_ids))
+                    self._set_model_names(sorted(model_ids), self._enabled_model_names())
                     self._test_status.setText(tr("custom.models_found", len(model_ids)))
                     self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
                 else:
@@ -977,7 +1086,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         """测试 Custom API 连接"""
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
-        models = self._model_names()
+        models = self._test_model_names()
         model = models[0] if models else 'test'
 
         if not url:

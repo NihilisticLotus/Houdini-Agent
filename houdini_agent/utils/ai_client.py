@@ -2489,6 +2489,12 @@ class AIClient:
                 models = [m.strip() for m in re.split(r'[,;\n]+', models) if m.strip()]
             else:
                 models = [str(m).strip() for m in models if str(m).strip()]
+            enabled_models = profile.get('enabled_models') or []
+            if isinstance(enabled_models, str):
+                enabled_models = [m.strip() for m in re.split(r'[,;\n]+', enabled_models) if m.strip()]
+            else:
+                enabled_models = [str(m).strip() for m in enabled_models if str(m).strip()]
+            enabled_models = [m for m in enabled_models if m in models]
             try:
                 context_limit = int(profile.get('context_limit') or 128000)
             except (TypeError, ValueError):
@@ -2498,6 +2504,7 @@ class AIClient:
                 'api_url': normalize_custom_chat_url(profile.get('api_url', '')),
                 'api_key': str(profile.get('api_key') or '').strip(),
                 'models': models,
+                'enabled_models': enabled_models,
                 'context_limit': context_limit,
                 'supports_vision': bool(profile.get('supports_vision', False)),
                 'supports_fc': bool(profile.get('supports_fc', supports_fc)),
@@ -2508,6 +2515,7 @@ class AIClient:
                 'api_url': normalize_custom_chat_url(api_url),
                 'api_key': (api_key or '').strip(),
                 'models': [],
+                'enabled_models': [],
                 'context_limit': 128000,
                 'supports_vision': False,
                 'supports_fc': supports_fc,
@@ -2518,12 +2526,14 @@ class AIClient:
         self._CUSTOM_MODEL_NAMES = {}
         model_counts: Dict[str, int] = {}
         for profile in normalized_profiles:
-            for model in profile.get('models', []):
+            visible_models = profile.get('enabled_models') or profile.get('models', [])
+            for model in visible_models:
                 model_counts[model] = model_counts.get(model, 0) + 1
 
         for profile in normalized_profiles:
             profile_name = profile.get('name', 'Custom')
-            for model in profile.get('models', []):
+            visible_models = profile.get('enabled_models') or profile.get('models', [])
+            for model in visible_models:
                 label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
                 self._CUSTOM_MODEL_ROUTES[label] = profile
                 self._CUSTOM_MODEL_NAMES[label] = model
@@ -2635,7 +2645,7 @@ class AIClient:
     def _get_default_model(self, provider: str) -> str:
         if (provider or '').lower() == 'custom':
             profile = self._get_custom_profile()
-            models = profile.get('models') or []
+            models = profile.get('enabled_models') or profile.get('models') or []
             if models:
                 return models[0]
         defaults = {
