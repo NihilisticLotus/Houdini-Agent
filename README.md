@@ -2,17 +2,24 @@
 
 **[English](README.md)** | **[中文](README_CN.md)**
 
+> This project is a fork of the original [Kazama-Suichiku/Houdini-Agent](https://github.com/Kazama-Suichiku/Houdini-Agent), originally developed by **KazamaSuichiku**. This fork keeps the upstream Houdini agent foundation and adds workflow, provider, UI, and memory-review improvements on top.
+
 An AI-powered assistant for SideFX Houdini, featuring autonomous multi-turn tool calling, web search, VEX/Python code execution, Plan mode for complex tasks, always-on workflow experience distillation and promotion review, a brain-inspired long-term memory system, a plugin hook system for community extensions, user-defined context rules, and a modern dark UI with bilingual support.
 
 Built on the **OpenAI Function Calling** protocol, the agent can read node networks, create/modify/connect nodes, run VEX wrangles, execute system shell commands, search the web, query local documentation, create structured execution plans, learn from past interactions, and be extended via plugins — all within an iterative agent loop. A centralized **ToolRegistry** unifies core tools, skills, and plugin tools with mode-based access control.
 
-## Recent Updates
+## Recent Fork Updates
 
-- Chat records now have per-message delete actions for persisted user and assistant entries; deleting a record updates the active conversation history, session cache, and restored view.
-- Chat rendering now reflows long user messages, AI responses, code blocks, and API error/status text when the window is resized, preventing horizontal clipping.
-- Sent image thumbnails and `capture_viewport` snapshots are preserved in the chat timeline and can be clicked to open the full-size preview dialog after sending.
-- Vision-capable agent runs can attach automatic viewport checkpoints after scene-changing phases, allowing the model to verify Houdini results visually without capturing after every single edit.
-- Workflow experience review now supports multi-candidate extraction, hiding/showing rejected items, deleting rejected candidates, and exporting curated semantic/procedural experiences to Markdown.
+Compared with upstream [`Kazama-Suichiku/Houdini-Agent`](https://github.com/Kazama-Suichiku/Houdini-Agent), this fork currently adds the following user-facing changes:
+
+- **Custom Provider profiles** — multiple named Custom profiles can be stored at once, each with its own URL, API key, protocol, model list, context limit, vision support, Function Calling support, and visible-model checklist.
+- **Improved Custom model setup** — the Custom settings dialog supports add/delete profile buttons, separate profile-name editing, automatic model fetching, connection testing, checkable visible models, and legacy single-profile config migration.
+- **Anthropic Messages for Custom providers** — Custom profiles can choose either OpenAI-compatible Chat Completions or Anthropic Messages protocol; `/chat/completions`, `/messages`, and `/models` URLs are normalized automatically, with Anthropic `x-api-key` and `anthropic-version` headers handled by the client.
+- **Stable Custom model selection** — the main model selector is a fixed drop-down populated from enabled profile models, while profile editing keeps profile selection separate from name editing to avoid accidental overwrites.
+- **Richer agent timeline** — interleaved thinking, tool execution, viewport checkpoints, and final replies stay in order; verbose execution details such as tool calls, node diffs, shell previews, and viewport snapshots are collapsed by default.
+- **Retry and stop handling** — transient API failures use a configurable retry limit with retry logs in the response, and stopped runs preserve partial thinking/execution history instead of losing the in-progress trace.
+- **Chat/session polish** — per-message delete actions, long-text reflow on resize, clickable sent-image and `capture_viewport` thumbnails, automatic/manual session titles, and safer session cache updates are included.
+- **Workflow experience review** — completed tasks queue multiple distilled experience candidates, support rejected-item hide/delete, and can export curated semantic/procedural experiences to Markdown.
 
 ## Core Features
 
@@ -49,7 +56,26 @@ User request → AI plans → call tools → inspect results → call more tools
 | **Ollama** (local) | `qwen2.5:14b`, any local model | Privacy-first, auto-detects available models |
 | **Duojie** (relay) | `claude-opus-4-6-gemini`, `claude-opus-4-6-max`, `claude-sonnet-4-5`, `claude-sonnet-4-6`, `gemini-3-flash`, `gemini-3.1-pro`, `glm-5-turbo`, `glm-5.1`, `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` | Claude, Gemini, GLM, MiniMax via relay endpoint |
 | **OpenRouter** | `claude-sonnet-4.6`, `claude-opus-4.6`, `gpt-5.2`, `gemini-2.5-pro`, `deepseek-r1`, `grok-4.1-fast`, `llama-4-maverick`, `qwen3-235b` + 8 more | 16 models from all major providers via single API key |
-| **Custom** | User-configurable | Any OpenAI-compatible endpoint (LM Studio, vLLM, etc.); configurable URL, API Key, model name, context limit, vision & FC support |
+| **Custom** | User-configurable | Multiple named profiles for OpenAI-compatible or Anthropic Messages endpoints; configurable URL, API Key, model list, visible models, context limit, vision & FC support |
+
+### Custom Provider Profiles
+
+Custom providers are profile-based in this fork. A profile stores its protocol (`OpenAI Compatible` or `Anthropic Messages`), endpoint, key, model list, context limit, visible-model choices, and capability flags. The main model selector shows `Profile / model` entries, and you can check only the models that should appear in the main UI; if none are checked, all models in that profile remain visible.
+
+Connection testing and model fetching respect the selected protocol. OpenAI-compatible profiles use Chat Completions and `/models`; Anthropic profiles use Messages and Anthropic-style `/models`, including the required Anthropic headers. This makes Claude-compatible relays and OpenAI-compatible local servers usable side by side.
+
+#### Configure Custom Models
+
+1. Select **Custom** in the provider drop-down, then click the settings button beside it.
+2. Use the profile selector to choose an existing profile, or click **+** to add another URL/API-key group. The profile name field is independent from profile selection, so renaming one profile will not accidentally switch or overwrite another.
+3. Choose **OpenAI Compatible** for `/v1/chat/completions` style services such as LM Studio, vLLM, Text Generation WebUI, OpenAI-compatible relays, and many local servers. Choose **Anthropic Messages** for Claude-compatible `/v1/messages` style services.
+4. Enter either a base URL or a full endpoint. The client normalizes common forms automatically, including `/v1`, `/v1/chat/completions`, `/v1/messages`, and the matching `/models` endpoint for model discovery.
+5. Fill the API key if required. OpenAI-compatible profiles send `Authorization: Bearer ...`; Anthropic profiles send `x-api-key` and `anthropic-version`.
+6. Click the refresh button to fetch models from the API, or add model names manually. Check only the models you want in the main selector; leave all unchecked to show the whole profile model list.
+7. Set the context length and capability flags (`Supports image input`, `Supports Function Calling`), then use **Test Connection**. The test uses the first checked model, or the first model in the list when none are checked.
+8. Save the dialog. The header model selector is rebuilt as fixed `Profile / model` options, which avoids free-text model drift and keeps per-profile routing stable.
+
+Existing older single-profile Custom settings are migrated into the new profile list automatically when loaded.
 
 ### Vision / Image Input
 
@@ -71,7 +97,9 @@ User request → AI plans → call tools → inspect results → call more tools
 - **Token analytics** — real-time token count, reasoning tokens, cache hit rate, and per-model cost estimates (click for detailed breakdown)
 - **AuroraBar** — animated silver-white flowing gradient bar during AI generation
 - **Streaming VEX code preview** — real-time Cursor Apply-style code writing animation
+- **Structured response timeline** — thinking blocks, tool execution, retries, viewport checkpoints, and final replies remain ordered while detailed execution widgets stay collapsible
 - Multi-session tabs — run multiple independent conversations
+- Automatic and manual session titles
 - Copy button on AI responses
 - `Ctrl+Enter` to send messages
 - **Font scaling** — `Ctrl+=`/`Ctrl+-` to zoom, "Aa" button for slider control
@@ -590,7 +618,7 @@ Created attribwrangle1 with random Cd attribute on all points.
 
 ## Version History
 
-- **Current update** — **Workflow experience review and promotion**: Added always-on workflow experience candidate extraction and a four-lane review board (candidate / promoted / later / rejected), with distilled summaries, evidence, confidence, and promotion output in the detail pane. Experience distillation now extracts conclusions, applicable scenarios, validation methods, and useful evidence from context while filtering `<think>`, Todo continuation prompts, and tool chatter. Fixed the review dialog title-bar close button and updated long-term memory documentation.
+- **Current fork update** — **Custom providers, timeline, retries, and experience review**: Relative to upstream `Kazama-Suichiku/Houdini-Agent`, this fork adds multi-profile Custom provider management, visible-model selection, Custom Anthropic Messages protocol support, safer URL/model normalization, and more stable profile editing. Agent responses now preserve interleaved thinking/tool/viewport/final timeline entries, collapse verbose execution details, show configurable retry logs, and retain partial history when stopped. Chat/session handling adds per-message deletion, resize-safe wrapping, clickable sent-image and viewport thumbnails, automatic/manual session titles, and safer cache synchronization. Workflow experience review now extracts multiple candidates, filters process noise, supports rejected-item hide/delete, promotes reviewed knowledge into long-term memory, and exports curated Markdown.
 - **v1.5.5** — **DeepSeek V4 API adaptation + JSON Output**: New `deepseek-v4-flash` / `deepseek-v4-pro` models with explicit `thinking` parameter and `reasoning_effort` support. Old models (`deepseek-chat` / `deepseek-reasoner`) retained for compatibility (deprecated 2026/07/24). Default model migrated to `deepseek-v4-flash`. `chat_stream()` / `chat()` gain `response_format` parameter; reflection module uses `json_object` mode for reliable JSON output. V4 model pricing, context limits, and feature configs added.
 - **v1.5.4** — **Long-term memory global toggle**: Added enable/disable switch for the entire memory system. Multiple fixes.
 - **v1.5.3** — **Memory Manager dialog**: New `MemoryManagerDialog` UI for browsing, editing, deleting, and exporting semantic memories. `/memories` command support.
@@ -636,7 +664,8 @@ Created attribwrangle1 with random Cd attribute on all points.
 
 ## Author
 
-KazamaSuichiku
+- Original project and author: [KazamaSuichiku](https://github.com/Kazama-Suichiku) / [Kazama-Suichiku/Houdini-Agent](https://github.com/Kazama-Suichiku/Houdini-Agent)
+- This repository is a fork with additional optimizations and features documented above.
 
 ## License
 
