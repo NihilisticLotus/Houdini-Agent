@@ -5,6 +5,9 @@ Houdini Agent - Launcher
 import sys
 import os
 
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+
 # ============================================================
 # 强制使用本地 lib 目录中的依赖库
 # ============================================================
@@ -15,6 +18,15 @@ if os.path.exists(_LIB_DIR):
     if _LIB_DIR in sys.path:
         sys.path.remove(_LIB_DIR)
     sys.path.append(_LIB_DIR)
+
+try:
+    import importlib
+    if 'houdini_agent' in sys.modules:
+        importlib.reload(sys.modules['houdini_agent'])
+    else:
+        import houdini_agent  # noqa: F401
+except Exception:
+    pass
 
 # ============================================================
 

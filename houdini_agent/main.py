@@ -1,7 +1,10 @@
 import os
 import sys
 import hou
+from houdini_agent import configure_text_output
 from houdini_agent.qt_compat import QtWidgets
+
+configure_text_output()
 
 # 强制重新加载模块，避免缓存问题
 def _reload_modules():

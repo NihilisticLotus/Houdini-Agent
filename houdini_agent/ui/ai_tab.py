@@ -5544,7 +5544,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             stats = store.get_stats()
             core_mems = store.get_core_memories(max_count=10)
 
-            lines = ["📊 **长期记忆系统状态**\n"]
+            lines = ["**长期记忆系统状态**\n"]
             lines.append(f"- 情景记忆 (Episodic): {stats.get('episodic_count', 0)} 条")
             lines.append(f"- 语义记忆 (Semantic): {stats.get('semantic_count', 0)} 条")
             lines.append(f"- 策略记忆 (Procedural): {stats.get('procedural_count', 0)} 条")
@@ -5552,18 +5552,18 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             lines.append(f"- 向量维度: {stats.get('embedding_dim', 0)}")
 
             if core_mems:
-                lines.append(f"\n🧠 **核心记忆 (L0)** — {len(core_mems)} 条:")
+                lines.append(f"\n**核心记忆 (L0)** — {len(core_mems)} 条:")
                 for i, mem in enumerate(core_mems, 1):
                     conf = f"(conf={mem.confidence:.2f})" if hasattr(mem, 'confidence') else ""
                     lines.append(f"  {i}. [{mem.category}] {mem.rule} {conf}")
             else:
-                lines.append("\n🧠 核心记忆 (L0): 暂无")
+                lines.append("\n核心记忆 (L0): 暂无")
 
             # 显示成长指标
             if self._memory_initialized and self._growth_tracker:
                 try:
                     gm = self._growth_tracker.get_growth_metrics()
-                    lines.append(f"\n📈 **成长指标:**")
+                    lines.append(f"\n**成长指标:**")
                     lines.append(f"  - 成功率: {gm.get('success_rate', 0):.1%}")
                     lines.append(f"  - 错误率: {gm.get('error_rate', 0):.1%}")
                     lines.append(f"  - 成长分: {gm.get('growth_score', 0):.2f}")
