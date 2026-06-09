@@ -1374,6 +1374,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         self._is_running = running
         
         if running:
+            self._agent_started_at = time.time()
             # 锚定 agent 输出目标到当前 session
             self._agent_session_id = self._session_id
             self._agent_response = self._current_response
@@ -1441,6 +1442,15 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         # 按当前显示的 session 更新按钮状态
         self._update_run_buttons()
+
+    def _show_processed_status(self):
+        """Show elapsed task duration in the input status bar after the agent stops."""
+        started_at = getattr(self, '_agent_started_at', None)
+        elapsed = (time.time() - started_at) if started_at else 0.0
+        try:
+            self.thinking_bar.show_processed(elapsed)
+        except (RuntimeError, AttributeError):
+            pass
     
     # ===== 动效：输入框呼吸光晕 + AIResponse 流光边框 =====
 
@@ -1585,6 +1595,32 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             '[viewport snapshot attached' in text
             or '[auto visual checkpoint attached' in text
         )
+
+    @staticmethod
+    def _visible_viewport_message(msg: dict) -> dict:
+        """Convert an internal viewport-analysis prompt into a visible chat snapshot."""
+        if msg.get('role') != 'user':
+            return msg
+        content = msg.get('content')
+        if not isinstance(content, list):
+            return msg
+
+        text = '\n'.join(
+            part.get('text', '') for part in content
+            if isinstance(part, dict) and part.get('type') == 'text'
+        )
+        if '[auto visual checkpoint attached' in text:
+            label = '[Auto viewport verification]'
+        elif '[viewport snapshot attached' in text:
+            label = '[Viewport snapshot]'
+        else:
+            return msg
+
+        visible_parts = [{"type": "text", "text": label}]
+        for part in content:
+            if isinstance(part, dict) and part.get('type') == 'image_url':
+                visible_parts.append(part)
+        return {'role': 'user', 'content': visible_parts}
 
     def _on_append_content(self, text: str):
         """处理内容追加（主线程槽函数）
@@ -2031,6 +2067,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         if new_messages:
             for nm in new_messages:
                 if self._is_internal_viewport_message(nm):
+                    clean = self._visible_viewport_message(nm)
+                    history.append(clean)
                     continue
                 clean = nm.copy()
                 clean.pop('reasoning_content', None)  # 推理模型专用，不需持久化
@@ -2209,6 +2247,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         # 隐藏工具状态
         self._hideToolStatus.emit()
+        self._show_processed_status()
         
         # 更新上下文统计
         self._update_context_stats()
@@ -2248,6 +2287,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 pass
         
         self._set_running(False)
+        self._show_processed_status()
 
     def _on_agent_stopped(self):
         # ★ 恢复 Houdini 更新模式 & 清除主线程忙标记
@@ -2291,6 +2331,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         
         self._set_running(False)
         self._hideToolStatus.emit()
+        self._show_processed_status()
     
     def _ensure_history_ends_with_assistant(self, fallback_content: str):
         """确保 conversation_history 以 assistant 消息结尾
@@ -4568,12 +4609,12 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
     def _on_add_viewport_snapshot(self, label: str, b64_data: str, media_type: str):
         """Render a capture_viewport image as a clickable chat thumbnail."""
         try:
+            image_tuple = self._image_tuple_from_b64(b64_data, media_type or 'image/jpeg')
             resp = self._agent_response or self._current_response
             if resp:
                 resp.add_viewport_snapshot(label, b64_data, media_type or 'image/jpeg')
                 self._scroll_agent_to_bottom(force=False)
                 return
-            image_tuple = self._image_tuple_from_b64(b64_data, media_type or 'image/jpeg')
             if image_tuple:
                 self._add_user_message(label or "Viewport snapshot", images=[image_tuple])
         except RuntimeError:
@@ -7270,7 +7311,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         msg = messages[si]
         role = msg.get('role', '')
         if self._is_internal_viewport_message(msg):
-            return
+            msg = self._visible_viewport_message(msg)
+            role = msg.get('role', '')
         raw_content = msg.get('content', '') or ''
         if isinstance(raw_content, list):
             content = '\n'.join(

@@ -725,6 +725,7 @@ class ExecutionSection(CollapsibleSection):
         self.setMinimumWidth(0)
         self._tool_calls: List[ToolCallItem] = []
         self._start_time = time.time()
+        self._finalized = False
         
         # 更新标题样式
         self.header.setObjectName("execHeader")
@@ -767,6 +768,9 @@ class ExecutionSection(CollapsibleSection):
     
     def finalize(self):
         """完成执行"""
+        if self._finalized:
+            return
+        self._finalized = True
         elapsed = time.time() - self._start_time
         total = len(self._tool_calls)
         
@@ -897,7 +901,7 @@ class UserMessage(QtWidgets.QWidget):
 
     deleteRequested = QtCore.Signal(int, int)
 
-    _SOFT_WRAP_EVERY = 18
+    _SOFT_WRAP_EVERY = 36
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
@@ -995,13 +999,24 @@ class UserMessage(QtWidgets.QWidget):
 
     @classmethod
     def _soft_wrap_text(cls, text: str) -> str:
-        """Insert zero-width break points into long runs so QLabel can wrap."""
+        """Insert break points only into long unbroken latin/code-like runs."""
         if not text:
             return ""
         out = []
         run = 0
         for ch in text:
             out.append(ch)
+            code = ord(ch)
+            is_cjk = (
+                0x3400 <= code <= 0x4DBF
+                or 0x4E00 <= code <= 0x9FFF
+                or 0xF900 <= code <= 0xFAFF
+                or 0x3040 <= code <= 0x30FF
+                or 0xAC00 <= code <= 0xD7AF
+            )
+            if is_cjk:
+                run = 0
+                continue
             if ch.isspace() or ch in "/\\,.;:|()[]{}<>+-=*":
                 run = 0
                 continue
@@ -1090,6 +1105,7 @@ class AIResponse(QtWidgets.QWidget):
         self._content = ""
         self._has_thinking = False
         self._has_execution = False
+        self._execution_batch_open = False
         self._shell_count = 0  # Python Shell 执行计数
         
         # ★ 增量渲染状态
@@ -1289,6 +1305,7 @@ class AIResponse(QtWidgets.QWidget):
 
     def start_thinking_round(self) -> ThinkingSection:
         """Ensure the current thinking block belongs to the active reasoning round."""
+        self._close_execution_batch_if_complete()
         if self.thinking_section is None or self.thinking_section._finalized:
             section = ThinkingSection(self)
             section.setVisible(True)
@@ -1300,8 +1317,12 @@ class AIResponse(QtWidgets.QWidget):
         return self.thinking_section
 
     def _ensure_execution_section(self) -> ExecutionSection:
-        """Create a new execution block when the previous tool batch is complete."""
-        if self.execution_section is None or self.execution_section.is_complete():
+        """Create or reuse the current continuous execution batch."""
+        if (
+            self.execution_section is None
+            or not self._execution_batch_open
+            or getattr(self.execution_section, '_finalized', False)
+        ):
             section = ExecutionSection(self)
             section.setVisible(True)
             section.nodePathClicked.connect(self.nodePathClicked.emit)
@@ -1309,7 +1330,13 @@ class AIResponse(QtWidgets.QWidget):
             self._execution_sections.append(section)
             self.execution_section = section
             self._has_execution = True
+            self._execution_batch_open = True
         return self.execution_section
+
+    def _close_execution_batch_if_complete(self):
+        section = self.execution_section
+        if section is not None and section.is_complete():
+            self._execution_batch_open = False
     
     def add_thinking(self, text: str):
         """添加思考内容"""
@@ -1353,6 +1380,7 @@ class AIResponse(QtWidgets.QWidget):
             tool_name = text[6:].strip()
             self._add_tool_call(tool_name)
         else:
+            self._close_execution_batch_if_complete()
             self.status_label.setText(UserMessage._soft_wrap_text(text))
             QtCore.QTimer.singleShot(0, self._sync_content_widths)
     
@@ -1455,6 +1483,7 @@ class AIResponse(QtWidgets.QWidget):
         # 丢弃它们会导致多段内容粘连在一起
         if not text.strip() and '\n' not in text:
             return
+        self._close_execution_batch_if_complete()
         # 清除 U+FFFD 替换符（encoding 异常残留）
         if '\ufffd' in text:
             text = text.replace('\ufffd', '')
@@ -1696,6 +1725,7 @@ class AIResponse(QtWidgets.QWidget):
         # 完成执行区块
         for section in self._execution_sections:
             section.finalize()
+        self._execution_batch_open = False
         
         # 更新状态
         parts = []
@@ -5461,8 +5491,9 @@ class UnifiedStatusBar(QtWidgets.QWidget):
         self.setObjectName("unifiedStatusBar")
         self.setVisible(False)
 
-        self._mode = None  # 'thinking' | 'generating' | 'tool' | None
+        self._mode = None  # 'thinking' | 'generating' | 'planning' | 'tool' | 'processed' | None
         self._elapsed = 0.0
+        self._processed_seconds = 0.0
         self._phase = 0.0
 
         # 流光定时器 ~25fps
@@ -5530,6 +5561,14 @@ class UnifiedStatusBar(QtWidgets.QWidget):
             self._timer.start()
         self.update()
 
+    def show_processed(self, seconds: float):
+        """显示任务完成后的总耗时。"""
+        self._mode = 'processed'
+        self._processed_seconds = max(0.0, seconds)
+        self._timer.stop()
+        self.setVisible(True)
+        self.update()
+
     def hide_tool(self):
         """隐藏工具状态 → 自动切换到 generating 模式（等待下轮 API 响应）"""
         if self._mode == 'tool':
@@ -5553,6 +5592,15 @@ class UnifiedStatusBar(QtWidgets.QWidget):
             self._paint_planning(event)
         elif self._mode == 'tool':
             self._paint_tool(event)
+        elif self._mode == 'processed':
+            self._paint_processed(event)
+
+    @staticmethod
+    def _fmt_processed_duration(seconds: float) -> str:
+        s = int(seconds)
+        if s < 60:
+            return f"{s}s"
+        return f"{s // 60}m {s % 60}s"
 
     def _paint_thinking(self, event):
         """绘制思考状态 — 流光文字"""
@@ -5677,6 +5725,23 @@ class UnifiedStatusBar(QtWidgets.QWidget):
             grad.setColorAt(after, QtGui.QColor(212, 190, 140, 0))
         grad.setColorAt(1.0, QtGui.QColor(212, 190, 140, 0))
         p.setPen(QtGui.QPen(QtGui.QBrush(grad), 0))
+        p.drawText(x, y, text)
+        p.end()
+
+    def _paint_processed(self, event):
+        """绘制完成后的静态耗时状态。"""
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        duration = self._fmt_processed_duration(getattr(self, '_processed_seconds', 0.0))
+        text = f"{tr('status.processed')} {duration} >"
+        font = ThemeEngine.font(CursorTheme.FONT_BODY, 13)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        x = (w - tw) // 2
+        y = (h + fm.ascent() - fm.descent()) // 2
+        p.setPen(QtGui.QColor(148, 163, 184, 185))
         p.drawText(x, y, text)
         p.end()
 
