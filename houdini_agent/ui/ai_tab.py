@@ -125,6 +125,7 @@ class AITab(
         # 启动断点日志：用于诊断冷启动 freeze（参见 issue #9）
         print("[AITab] init: begin")
         self.client = AIClient()
+        self._load_retry_preference()
         self.mcp = HoudiniMCP()
         self.mcp.set_stop_event(self.client._stop_event)  # 共享停止事件，使 shell/python 命令可被中断
         self.client.set_tool_executor(self._execute_tool_with_todo)
@@ -1520,6 +1521,71 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
     # ===== 信号处理 =====
     
+    _RETRY_NOTICE_KEYWORDS = (
+        '服务端暂时不可用',
+        '上下文超限',
+        '连续出错',
+    )
+
+    def _split_retry_notices(self, text: str) -> tuple[str, list[str]]:
+        if not text:
+            return "", []
+        normal_parts = []
+        notices = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.strip()
+            is_notice = (
+                stripped.startswith('[')
+                and stripped.endswith(']')
+                and any(keyword in stripped for keyword in self._RETRY_NOTICE_KEYWORDS)
+            )
+            if is_notice:
+                notices.append(stripped)
+            else:
+                normal_parts.append(line)
+        return ''.join(normal_parts), notices
+
+    def _append_retry_notices(self, resp, notices: list[str]):
+        if not notices:
+            return
+        lines = getattr(resp, '_retry_notice_lines', None)
+        if lines is None:
+            lines = []
+            setattr(resp, '_retry_notice_lines', lines)
+        lines.extend(notices)
+
+        section = getattr(resp, '_retry_notice_section', None)
+        label = getattr(resp, '_retry_notice_label', None)
+        try:
+            if section is None:
+                section = resp.add_collapsible(tr('retry.log_title', len(lines)), '')
+                setattr(resp, '_retry_notice_section', section)
+                item = section.content_layout.itemAt(0)
+                label = item.widget() if item else None
+                setattr(resp, '_retry_notice_label', label)
+            section.set_title(tr('retry.log_title', len(lines)))
+            if label is not None:
+                label.setText('\n'.join(lines))
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _is_internal_viewport_message(msg: dict) -> bool:
+        """Return True for model-only viewport image prompts that should not render as chat."""
+        if msg.get('role') != 'user':
+            return False
+        content = msg.get('content')
+        if not isinstance(content, list):
+            return False
+        text = '\n'.join(
+            part.get('text', '') for part in content
+            if isinstance(part, dict) and part.get('type') == 'text'
+        )
+        return (
+            '[viewport snapshot attached' in text
+            or '[auto visual checkpoint attached' in text
+        )
+
     def _on_append_content(self, text: str):
         """处理内容追加（主线程槽函数）
         
@@ -1530,16 +1596,26 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         resp = self._agent_response or self._current_response
         if not text or not resp:
             return
+        text, retry_notices = self._split_retry_notices(text)
         # ★ 修复：不丢弃包含换行符的 chunk
         # 纯换行符（\n\n）是 Markdown 段落分隔的关键信号，
         # 丢弃它们会导致多段内容粘连在一起
+        if retry_notices and not text.strip():
+            self._append_retry_notices(resp, retry_notices)
+            return
         if not text.strip() and '\n' not in text:
+            self._append_retry_notices(resp, retry_notices)
             return
         try:
+            self._append_retry_notices(resp, retry_notices)
             # ★ 内容开始流入 → 隐藏 "Generating..." 状态（如果正在显示）
             if hasattr(self, 'thinking_bar') and getattr(self.thinking_bar, '_mode', None) == 'generating':
                 self.thinking_bar.stop()
-            if getattr(resp, '_has_thinking', False) and not resp.thinking_section._finalized:
+            if (
+                getattr(resp, '_has_thinking', False)
+                and getattr(resp, 'thinking_section', None) is not None
+                and not resp.thinking_section._finalized
+            ):
                 resp.thinking_section.finalize()
             resp.append_content(text)
             self._scroll_agent_to_bottom(force=False)
@@ -1647,7 +1723,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         """[主线程] 实际执行 finalize 思考区块并停止计时器"""
         try:
             resp = self._agent_response or self._current_response
-            if resp and resp._has_thinking:
+            if resp and resp._has_thinking and getattr(resp, 'thinking_section', None) is not None:
                 if not resp.thinking_section._finalized:
                     resp.thinking_section.finalize()
         except RuntimeError:
@@ -1668,10 +1744,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             return  # Agent 已停止，忽略延迟到达的信号
         try:
             resp = self._agent_response or self._current_response
-            if resp and resp._has_thinking:
-                ts = resp.thinking_section
-                if ts._finalized:
-                    ts.resume()
+            if resp:
+                resp.start_thinking_round()
         except RuntimeError:
             pass  # widget 已被 clear 销毁
         # 重启计时器（如果已停止）
@@ -1834,7 +1908,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 resp.update_thinking_time()
                 # ★ 同步更新输入框上方思考指示条的时间
                 if hasattr(self, 'thinking_bar') and self.thinking_bar.isVisible():
-                    if resp._has_thinking:
+                    if resp._has_thinking and getattr(resp, 'thinking_section', None) is not None:
                         self.thinking_bar.set_elapsed(resp.thinking_section._total_elapsed())
         except RuntimeError:
             pass  # 控件可能已销毁
@@ -1892,6 +1966,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             self._pre_agent_update_mode = None
     
     def _on_agent_done(self, result: dict):
+        stopped = bool(result.get('stopped'))
+        stop_marker = "[Stopped by user]"
         # ★ Hook: on_session_end
         self._fire_session_hook('on_session_end', self._agent_session_id or self._session_id)
         
@@ -1932,6 +2008,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 if resp._content:
                     resp._content = self._resolve_bare_node_names(resp._content)
                 resp.finalize()
+                if stopped:
+                    resp.add_status("Stopped")
         except RuntimeError:
             resp = None  # widget 已被 clear 销毁，跳过 UI 操作
         
@@ -1952,6 +2030,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         #   最终的纯文本 assistant 回复由下面步骤 2 统一构建，避免重复
         if new_messages:
             for nm in new_messages:
+                if self._is_internal_viewport_message(nm):
+                    continue
                 clean = nm.copy()
                 clean.pop('reasoning_content', None)  # 推理模型专用，不需持久化
                 # 跳过最后一条纯文本 assistant 消息（没有 tool_calls 的），
@@ -1984,10 +2064,22 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             thinking_text = '\n'.join(thinking_parts).strip() if thinking_parts else ''
             clean_content = re.sub(r'<think>[\s\S]*?</think>', '', final_content).strip()
             clean_content = self._strip_fake_tool_results(clean_content)
+        if stopped:
+            clean_content = (
+                f"{clean_content}\n\n{stop_marker}".strip()
+                if clean_content and stop_marker not in clean_content
+                else (clean_content or stop_marker)
+            )
         # 原生 thinking 协议（非 <think> 标签）：从 UI widget 获取已收集的 thinking
         if not thinking_text and resp and resp._has_thinking:
             try:
-                ui_thinking = resp.thinking_section._thinking_text.strip()
+                sections = getattr(resp, '_thinking_sections', []) or []
+                ui_thinking = '\n\n'.join(
+                    s._thinking_text.strip() for s in sections
+                    if getattr(s, '_thinking_text', '').strip()
+                )
+                if not ui_thinking and getattr(resp, 'thinking_section', None) is not None:
+                    ui_thinking = resp.thinking_section._thinking_text.strip()
                 if ui_thinking:
                     thinking_text = ui_thinking
             except (AttributeError, RuntimeError):
@@ -1997,7 +2089,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         # 只要有内容或有工具交互，都需要一条最终 assistant 消息
         need_final = bool(clean_content) or bool(new_messages) or not history or history[-1].get('role') != 'assistant'
         if need_final:
-            final_msg = {'role': 'assistant', 'content': clean_content or tr('ai.no_content')}
+            final_msg = {'role': 'assistant', 'content': clean_content or (stop_marker if stopped else tr('ai.no_content'))}
             if thinking_text:
                 final_msg['thinking'] = thinking_text
             # 提取 shell 执行记录，供历史恢复时重建 Shell 折叠面板
@@ -2179,14 +2271,23 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         except RuntimeError:
             pass  # widget 已被 clear 销毁
         
-        # ★ 确保历史以 assistant 结尾（防止连续 user 消息破坏结构）
-        self._ensure_history_ends_with_assistant("[Stopped by user]")
+        # ★ 保留已经流式显示出来的半成品回复，再用 stopped 标记收尾
+        self._append_partial_response_to_history("[Stopped by user]")
         history = self._agent_history if self._agent_history is not None else self._conversation_history
         if resp and history and history[-1].get('role') == 'assistant':
             try:
                 resp.set_history_range(len(history) - 1, len(history))
             except RuntimeError:
                 pass
+
+        agent_sid = self._agent_session_id
+        if self._auto_save_cache and history and agent_sid:
+            if agent_sid in self._sessions:
+                self._sessions[agent_sid]['conversation_history'] = history
+                if self._agent_token_stats is not None:
+                    self._sessions[agent_sid]['token_stats'] = self._agent_token_stats
+            if agent_sid == self._session_id:
+                self._save_cache()
         
         self._set_running(False)
         self._hideToolStatus.emit()
@@ -2200,6 +2301,36 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         history = self._agent_history if self._agent_history is not None else self._conversation_history
         if history and history[-1].get('role') == 'user':
             history.append({'role': 'assistant', 'content': fallback_content})
+
+    def _append_partial_response_to_history(self, fallback_content: str):
+        """Persist the currently rendered partial response before error/stop cleanup."""
+        history = self._agent_history if self._agent_history is not None else self._conversation_history
+        resp = self._agent_response or self._current_response
+        if not history or history[-1].get('role') == 'assistant':
+            return
+
+        content = ""
+        thinking = ""
+        try:
+            if resp:
+                content = self._strip_fake_tool_results(getattr(resp, '_content', '') or '').strip()
+                sections = getattr(resp, '_thinking_sections', []) or []
+                thinking = '\n\n'.join(
+                    s._thinking_text.strip() for s in sections
+                    if getattr(s, '_thinking_text', '').strip()
+                )
+        except (AttributeError, RuntimeError):
+            content = ""
+            thinking = ""
+
+        final_content = content or fallback_content
+        if fallback_content and fallback_content not in final_content:
+            final_content = f"{final_content}\n\n{fallback_content}".strip()
+
+        msg = {'role': 'assistant', 'content': final_content}
+        if thinking:
+            msg['thinking'] = thinking
+        history.append(msg)
 
     # ---------- 工具执行状态 ----------
 
@@ -2570,7 +2701,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
         # 插入到对话流
         try:
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1, card)
+            self._insert_chat_widget(card)
         except Exception as e:
             print(f"[AskQuestion] ⚠ 插入失败: {e}")
             q.put(None)
@@ -2620,7 +2751,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
             card = StreamingPlanCard(parent=self.chat_container)
             self._streaming_plan_card = card
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1, card)
+            self._insert_chat_widget(card)
             self._scroll_to_bottom(force=True)
         except Exception as e:
             print(f"[Plan] Create streaming card error: {e}")
@@ -2675,7 +2806,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 viewer.planConfirmed.connect(self._on_plan_confirmed)
                 viewer.planRejected.connect(self._on_plan_rejected)
                 self._active_plan_viewer = viewer
-                self.chat_layout.insertWidget(self.chat_layout.count() - 1, viewer)
+                self._insert_chat_widget(viewer)
             self._scroll_to_bottom(force=True)
         except Exception as e:
             print(f"[Plan] Render PlanViewer error: {e}")
@@ -4288,7 +4419,10 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                     max_tokens=None,
                 ):
                     if self.client.is_stop_requested():
-                        self._agentStopped.emit()
+                        result['ok'] = False
+                        result['stopped'] = True
+                        result['final_content'] = result.get('content', '')
+                        self._agentDone.emit(result)
                         return
                     
                     ctype = chunk.get('type')
@@ -4306,17 +4440,23 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                         if usage:
                             result['usage'] = usage
                     elif ctype == 'stopped':
-                        self._agentStopped.emit()
+                        result['ok'] = False
+                        result['stopped'] = True
+                        result['final_content'] = result.get('content', '')
+                        self._agentDone.emit(result)
                         return
                     elif ctype == 'error':
                         result = {'ok': False, 'error': chunk.get('error')}
                         break
             
             if self.client.is_stop_requested():
-                self._agentStopped.emit()
+                result['ok'] = False
+                result['stopped'] = True
+                result['final_content'] = result.get('content', '')
+                self._agentDone.emit(result)
                 return
             
-            if result.get('ok'):
+            if result.get('ok') or result.get('stopped'):
                 self._agentDone.emit(result)
             else:
                 error_msg = result.get('error', 'Unknown error')
@@ -4326,7 +4466,17 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         except Exception as e:
             import traceback
             if self.client.is_stop_requested():
-                self._agentStopped.emit()
+                self._agentDone.emit({
+                    'ok': False,
+                    'stopped': True,
+                    'content': '',
+                    'final_content': '',
+                    'new_messages': [],
+                    'tool_calls_history': [],
+                    'call_records': [],
+                    'iterations': 0,
+                    'usage': {},
+                })
             else:
                 # 显示完整错误信息
                 error_detail = f"{type(e).__name__}: {str(e)}"
@@ -4418,6 +4568,11 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
     def _on_add_viewport_snapshot(self, label: str, b64_data: str, media_type: str):
         """Render a capture_viewport image as a clickable chat thumbnail."""
         try:
+            resp = self._agent_response or self._current_response
+            if resp:
+                resp.add_viewport_snapshot(label, b64_data, media_type or 'image/jpeg')
+                self._scroll_agent_to_bottom(force=False)
+                return
             image_tuple = self._image_tuple_from_b64(b64_data, media_type or 'image/jpeg')
             if image_tuple:
                 self._add_user_message(label or "Viewport snapshot", images=[image_tuple])
@@ -4545,7 +4700,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 self._streaming_preview = StreamingCodePreview(tool_name, parent=resp)
                 self._streaming_preview_tool = tool_name
                 self._streaming_last_code = ""
-                resp.details_layout.addWidget(self._streaming_preview)
+                resp.add_execution_detail(self._streaming_preview)
                 self._scroll_agent_to_bottom()
 
             # 更新预览（StreamingCodePreview 内部做增量追加）
@@ -4698,7 +4853,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                         lambda _op=l_op, _paths=list(l_paths), _snap=None:
                             self._undo_node_operation(_op, _paths, _snap)
                     )
-                    resp.details_layout.addWidget(l_label)
+                    resp.add_execution_detail(l_label)
                     entry = (l_label, l_op, list(l_paths), None)
                     self._pending_ops.append(entry)
                     l_label.decided.connect(self._update_batch_bar)
@@ -4715,7 +4870,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                     lambda _op=op_type, _paths=list(paths), _snap=undo_snapshot:
                         self._undo_node_operation(_op, _paths, _snap)
                 )
-                resp.details_layout.addWidget(label)
+                resp.add_execution_detail(label)
                 
                 # ★ 追踪未决操作 → Undo All / Keep All 按钮可见
                 entry = (label, op_type, list(paths), undo_snapshot)
@@ -5228,10 +5383,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         self._batch_bar.setVisible(False)
         self._session_node_map.clear()
         
-        while self.chat_layout.count() > 1:
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_chat_widgets()
         
         # 旧 todo_list 已被 deleteLater, 创建新的
         self.todo_list = self._create_todo_list(self.chat_container)
@@ -7007,11 +7159,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         3. role="tool"（旧缓存格式）
            → 先 add_tool_call 再 set_tool_result（折叠式）
         """
-        # 清空当前显示（保留末尾 stretch）
-        while self.chat_layout.count() > 1:
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        # 清空当前显示（保留末尾聊天锚点）
+        self._clear_chat_widgets()
 
         # 取消之前的分批渲染定时器
         if hasattr(self, '_batch_render_timer') and self._batch_render_timer is not None:
@@ -7044,9 +7193,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 "font-style: italic; background: transparent;"
             )
             self._batch_placeholder.setAlignment(QtCore.Qt.AlignCenter)
-            # 插入到 stretch 之前
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1,
-                                         self._batch_placeholder)
+            # 插入到聊天锚点之前
+            self._insert_chat_widget(self._batch_placeholder)
 
             # 渲染最后 _BATCH_INITIAL 组
             self._render_message_groups(groups, early_count, total_groups)
@@ -7121,6 +7269,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         """渲染一个消息组"""
         msg = messages[si]
         role = msg.get('role', '')
+        if self._is_internal_viewport_message(msg):
+            return
         raw_content = msg.get('content', '') or ''
         if isinstance(raw_content, list):
             content = '\n'.join(
@@ -7155,7 +7305,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                     thinking = msg.get('thinking', '')
                     if thinking:
                         response.add_thinking(thinking)
-                        response.thinking_section.finalize()
+                        if getattr(response, 'thinking_section', None) is not None:
+                            response.thinking_section.finalize()
                     self._render_old_tool_msgs(response, tool_msgs)
                     self._restore_shell_widgets(response, msg)
                     response.set_content(content)
@@ -7207,8 +7358,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 # 将新添加的 widget 移动到正确位置（占位符之前）
                 if added > 0:
                     for _ in range(added):
-                        # 取出最后添加的 widget（在 stretch 之前）
-                        from_idx = self.chat_layout.count() - 2  # -1 是 stretch, -2 是新 widget
+                        # 取出最后添加的 widget（在聊天锚点之前）
+                        from_idx = self._chat_end_index() - 1
                         item = self.chat_layout.takeAt(from_idx)
                         if item and item.widget():
                             self.chat_layout.insertWidget(insert_pos, item.widget())
@@ -7303,6 +7454,14 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         final_content = ''
         thinking = ''
         final_msg = {}
+
+        for m in turn_msgs:
+            if m.get('role') == 'assistant' and not m.get('tool_calls') and m.get('thinking'):
+                thinking = m.get('thinking', '')
+                response.add_thinking(thinking)
+                if getattr(response, 'thinking_section', None) is not None:
+                    response.thinking_section.finalize()
+                break
         
         for m in turn_msgs:
             r = m.get('role', '')
@@ -7322,7 +7481,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 else:
                     # 最终回复 assistant 消息
                     final_content = m.get('content', '') or ''
-                    thinking = m.get('thinking', '')
+                    thinking = thinking or m.get('thinking', '')
                     final_msg = m
             elif r == 'tool':
                 tc_id = m.get('tool_call_id', '')
@@ -7335,11 +7494,6 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 success = not t_content.lstrip().startswith('[err]') and 'error' not in t_content[:50].lower()
                 prefix = "[ok] " if success else "[err] "
                 response.add_tool_result(t_name, f"{prefix}{t_content}")
-        
-        # 恢复 thinking
-        if thinking:
-            response.add_thinking(thinking)
-            response.thinking_section.finalize()
         
         # 恢复 Shell 折叠面板
         self._restore_shell_widgets(response, final_msg)
@@ -7481,7 +7635,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         thinking = msg.get('thinking', '')
         if thinking:
             response.add_thinking(thinking)
-            response.thinking_section.finalize()
+            if getattr(response, 'thinking_section', None) is not None:
+                response.thinking_section.finalize()
 
         # 恢复正文（[工具执行结果]之后可能还有 AI 正式回复）
         # 找到工具摘要之后的正文部分

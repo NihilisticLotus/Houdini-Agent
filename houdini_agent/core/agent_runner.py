@@ -275,7 +275,7 @@ class AgentRunnerMixin:
 
         if not inserted:
             try:
-                self.chat_layout.insertWidget(self.chat_layout.count() - 1, preview)
+                self._insert_chat_widget(preview)
                 inserted = True
             except Exception as e:
                 print(f"[ConfirmMode] ⚠ chat_layout 插入失败: {e}")

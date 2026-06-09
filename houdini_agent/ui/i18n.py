@@ -141,6 +141,7 @@ _ZH = {
 
     # ===== Header / Menus =====
     'menu.api_key': 'API Key',
+    'menu.retry_limit': '重连次数：{}',
     'menu.clear_chat': '清空当前会话',
     'menu.cache': '缓存',
     'menu.optimize': '优化',
@@ -156,6 +157,10 @@ _ZH = {
     # ===== API Key =====
     'key.title': '设置 {} API Key',
     'key.prompt': '输入 API Key:',
+    'retry.title': '设置重连次数',
+    'retry.prompt': '服务端暂不可用或连接中断时最多重连次数（上限 {}）：',
+    'retry.applied': '重连次数已设置为 {}',
+    'retry.log_title': '重连记录 ({})',
 
     # ===== Custom Provider =====
     'custom.title': 'Custom Model 配置',
@@ -887,6 +892,7 @@ _EN = {
 
     # ===== Header / Menus =====
     'menu.api_key': 'API Key',
+    'menu.retry_limit': 'Retry Count: {}',
     'menu.clear_chat': 'Clear Current Chat',
     'menu.cache': 'Cache',
     'menu.optimize': 'Optimize',
@@ -902,6 +908,10 @@ _EN = {
     # ===== API Key =====
     'key.title': 'Set {} API Key',
     'key.prompt': 'Enter API Key:',
+    'retry.title': 'Set Retry Count',
+    'retry.prompt': 'Maximum reconnect attempts for temporary server or connection errors (max {}):',
+    'retry.applied': 'Retry count set to {}',
+    'retry.log_title': 'Retry Log ({})',
 
     # ===== Custom Provider =====
     'custom.title': 'Custom Model Settings',

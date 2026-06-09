@@ -1406,6 +1406,18 @@ except Exception as _e:
 
 class AIClient:
     """AI 客户端，支持流式传输、Function Calling、联网搜索"""
+
+    DEFAULT_RETRY_LIMIT = 5
+    MAX_RETRY_LIMIT = 20
+    MIN_RETRY_LIMIT = 1
+
+    @classmethod
+    def clamp_retry_limit(cls, value: Any) -> int:
+        try:
+            retries = int(value)
+        except (TypeError, ValueError):
+            retries = cls.DEFAULT_RETRY_LIMIT
+        return max(cls.MIN_RETRY_LIMIT, min(cls.MAX_RETRY_LIMIT, retries))
     
     OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
     DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -1453,7 +1465,8 @@ class AIClient:
         self._ollama_base_url = "http://localhost:11434"
         
         # 网络配置
-        self._max_retries = 3
+        self._max_retries = self.DEFAULT_RETRY_LIMIT
+        self._server_error_max_retries = self.DEFAULT_RETRY_LIMIT
         self._retry_delay = 1.0
         self._chunk_timeout = 60  # Ollama 本地模型可能较慢，增加超时
         
@@ -1470,6 +1483,15 @@ class AIClient:
     def request_stop(self):
         """请求停止当前请求（线程安全）"""
         self._stop_event.set()
+
+    def set_retry_limit(self, retries: int):
+        """Set user-configurable network/server retry limit."""
+        retries = self.clamp_retry_limit(retries)
+        self._max_retries = retries
+        self._server_error_max_retries = retries
+
+    def retry_limit(self) -> int:
+        return self._server_error_max_retries
     
     def reset_stop(self):
         """重置停止标志（线程安全）"""
@@ -2524,17 +2546,12 @@ class AIClient:
         self._CUSTOM_PROFILES = normalized_profiles
         self._CUSTOM_MODEL_ROUTES = {}
         self._CUSTOM_MODEL_NAMES = {}
-        model_counts: Dict[str, int] = {}
-        for profile in normalized_profiles:
-            visible_models = profile.get('enabled_models') or profile.get('models', [])
-            for model in visible_models:
-                model_counts[model] = model_counts.get(model, 0) + 1
 
         for profile in normalized_profiles:
             profile_name = profile.get('name', 'Custom')
             visible_models = profile.get('enabled_models') or profile.get('models', [])
             for model in visible_models:
-                label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
+                label = f"{profile_name} / {model}"
                 self._CUSTOM_MODEL_ROUTES[label] = profile
                 self._CUSTOM_MODEL_NAMES[label] = model
                 self._CUSTOM_MODEL_ROUTES.setdefault(model, profile)
@@ -3931,7 +3948,7 @@ class AIClient:
         consecutive_same_calls = 0  # 连续相同调用计数
         last_call_signature = None
         server_error_retries = 0    # 连续服务端错误重试计数
-        max_server_retries = 3      # 最多重试 3 次服务端错误
+        max_server_retries = self._server_error_max_retries
         
         # ★ Cursor 风格：同轮去重缓存
         # 如果 AI 在同一 turn 中用相同参数调用相同工具，直接返回缓存结果
@@ -4159,7 +4176,7 @@ class AIClient:
                             
                         elif is_server_transient or is_compress_fail:
                             # ---- 临时服务器错误：先等待重试，不急着裁剪 ----
-                            wait_seconds = 5 * server_error_retries
+                            wait_seconds = min(20, 5 * server_error_retries)
                             if on_content:
                                 on_content(f"\n[服务端暂时不可用，{wait_seconds}秒后重试 ({server_error_retries}/{max_server_retries})...]\n")
                             time.sleep(wait_seconds)
@@ -5053,7 +5070,7 @@ class AIClient:
         consecutive_same_calls = 0
         last_call_signature = None
         server_error_retries = 0    # 连续服务端错误重试计数
-        max_server_retries = 3      # 最多重试 3 次服务端错误
+        max_server_retries = self._server_error_max_retries
         
         while iteration < max_iterations:
             if self._stop_event.is_set():
@@ -5166,7 +5183,7 @@ class AIClient:
                             )
                         else:
                             # 临时服务器错误：等待，第2次开始才裁剪
-                            wait_seconds = 5 * server_error_retries
+                            wait_seconds = min(20, 5 * server_error_retries)
                             if on_content:
                                 on_content(f"\n[服务端暂时不可用，{wait_seconds}秒后重试 ({server_error_retries}/{max_server_retries})...]\n")
                             time.sleep(wait_seconds)

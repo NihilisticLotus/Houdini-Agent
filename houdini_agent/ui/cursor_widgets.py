@@ -8,6 +8,7 @@ Cursor 风格 UI 组件 - 重构版
 from houdini_agent.qt_compat import QtWidgets, QtCore, QtGui
 from datetime import datetime
 from typing import Optional, List, Dict
+import base64
 import html
 import math
 import re
@@ -736,6 +737,14 @@ class ExecutionSection(CollapsibleSection):
         self.content_layout.addWidget(item)
         self._update_title()
         return item
+
+    def is_complete(self) -> bool:
+        """Return True once all visible tool calls in this section have results."""
+        return bool(self._tool_calls) and all(item._result is not None for item in self._tool_calls)
+
+    def add_detail_widget(self, widget: QtWidgets.QWidget):
+        """Attach operation details to this execution block so they collapse together."""
+        self.content_layout.addWidget(widget)
     
     def set_tool_result(self, tool_name: str, result: str, success: bool = True):
         """设置工具结果"""
@@ -1105,29 +1114,18 @@ class AIResponse(QtWidgets.QWidget):
         # 供外部引用（原来直接用 layout 的地方）
         layout = content_col
         
-        # === 思考过程区块 ===
-        self.thinking_section = ThinkingSection(self)
-        self.thinking_section.setVisible(False)
-        layout.addWidget(self.thinking_section)
-        
-        # === 执行过程区块 ===
-        self.execution_section = ExecutionSection(self)
-        self.execution_section.setVisible(False)
-        self.execution_section.nodePathClicked.connect(self.nodePathClicked.emit)
-        layout.addWidget(self.execution_section)
-        
-        # === Python Shell 区块（可折叠，默认折叠）===
-        self.shell_section = CollapsibleSection(tr("shell.python"), collapsed=True, parent=self)
-        self.shell_section.setVisible(False)
-        self.shell_section.header.setObjectName("shellHeaderPython")
-        layout.addWidget(self.shell_section)
+        # Timeline sections are created lazily and inserted before the final
+        # reply area, preserving the real order: thinking -> tools -> verify -> thinking.
+        self._timeline_layout = layout
+        self._thinking_sections: List[ThinkingSection] = []
+        self._execution_sections: List[ExecutionSection] = []
+        self.thinking_section = None
+        self.execution_section = None
+        self.shell_section = None
         
         # === System Shell 区块（可折叠，默认折叠）===
         self._sys_shell_count = 0
-        self.sys_shell_section = CollapsibleSection(tr("shell.system"), collapsed=True, parent=self)
-        self.sys_shell_section.setVisible(False)
-        self.sys_shell_section.header.setObjectName("shellHeaderSystem")
-        layout.addWidget(self.sys_shell_section)
+        self.sys_shell_section = None
         
         # === 总结/回复区域 ===
         self.summary_frame = QtWidgets.QFrame()
@@ -1247,9 +1245,10 @@ class AIResponse(QtWidgets.QWidget):
             if hasattr(child, "setWordWrapMode"):
                 child.setWordWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
         self._frozen_container.updateGeometry()
-        if self.thinking_section.isVisible():
-            self.thinking_section.thinking_label.document().setTextWidth(width)
-            self.thinking_section._update_height()
+        for section in self._thinking_sections:
+            if section.isVisible():
+                section.thinking_label.document().setTextWidth(width)
+                section._update_height()
         self._auto_resize_content()
 
     def resizeEvent(self, event):
@@ -1268,19 +1267,50 @@ class AIResponse(QtWidgets.QWidget):
         if not self._history_range:
             return
         self.deleteRequested.emit(self._history_range[0], self._history_range[1])
+
+    def _timeline_insert_index(self) -> int:
+        try:
+            idx = self._timeline_layout.indexOf(self.summary_frame)
+            return idx if idx >= 0 else self._timeline_layout.count()
+        except (AttributeError, RuntimeError):
+            return self._timeline_layout.count()
+
+    def _insert_timeline_widget(self, widget: QtWidgets.QWidget):
+        self._timeline_layout.insertWidget(self._timeline_insert_index(), widget)
+        return widget
+
+    def start_thinking_round(self) -> ThinkingSection:
+        """Ensure the current thinking block belongs to the active reasoning round."""
+        if self.thinking_section is None or self.thinking_section._finalized:
+            section = ThinkingSection(self)
+            section.setVisible(True)
+            section.expand()
+            self._insert_timeline_widget(section)
+            self._thinking_sections.append(section)
+            self.thinking_section = section
+            self._has_thinking = True
+        return self.thinking_section
+
+    def _ensure_execution_section(self) -> ExecutionSection:
+        """Create a new execution block when the previous tool batch is complete."""
+        if self.execution_section is None or self.execution_section.is_complete():
+            section = ExecutionSection(self)
+            section.setVisible(True)
+            section.nodePathClicked.connect(self.nodePathClicked.emit)
+            self._insert_timeline_widget(section)
+            self._execution_sections.append(section)
+            self.execution_section = section
+            self._has_execution = True
+        return self.execution_section
     
     def add_thinking(self, text: str):
         """添加思考内容"""
-        if not self._has_thinking:
-            self._has_thinking = True
-            self.thinking_section.setVisible(True)
-            # 确保思考区块处于展开状态
-            self.thinking_section.expand()
-        self.thinking_section.append_thinking(text)
+        section = self.start_thinking_round()
+        section.append_thinking(text)
     
     def update_thinking_time(self):
         """更新思考时间（思考结束后不再更新状态标签）"""
-        if self._has_thinking:
+        if self._has_thinking and self.thinking_section is not None:
             if self.thinking_section._finalized:
                 return  # 思考已结束，不再更新
             self.thinking_section.update_time()
@@ -1290,16 +1320,22 @@ class AIResponse(QtWidgets.QWidget):
     def add_shell_widget(self, widget: 'PythonShellWidget'):
         """将 PythonShellWidget 添加到 Python Shell 折叠区块"""
         self._shell_count += 1
-        if not self.shell_section.isVisible():
-            self.shell_section.setVisible(True)
+        if self.shell_section is None:
+            self.shell_section = CollapsibleSection(tr("shell.python"), collapsed=True, parent=self)
+            self.shell_section.header.setObjectName("shellHeaderPython")
+            self._insert_timeline_widget(self.shell_section)
+        self.shell_section.setVisible(True)
         self.shell_section.set_title(f"{tr('shell.python')} ({self._shell_count})")
         self.shell_section.add_widget(widget)
     
     def add_sys_shell_widget(self, widget: 'SystemShellWidget'):
         """将 SystemShellWidget 添加到 System Shell 折叠区块"""
         self._sys_shell_count += 1
-        if not self.sys_shell_section.isVisible():
-            self.sys_shell_section.setVisible(True)
+        if self.sys_shell_section is None:
+            self.sys_shell_section = CollapsibleSection(tr("shell.system"), collapsed=True, parent=self)
+            self.sys_shell_section.header.setObjectName("shellHeaderSystem")
+            self._insert_timeline_widget(self.sys_shell_section)
+        self.sys_shell_section.setVisible(True)
         self.sys_shell_section.set_title(f"{tr('shell.system')} ({self._sys_shell_count})")
         self.sys_shell_section.add_widget(widget)
     
@@ -1314,17 +1350,55 @@ class AIResponse(QtWidgets.QWidget):
     
     def _add_tool_call(self, tool_name: str):
         """添加工具调用"""
-        if not self._has_execution:
-            self._has_execution = True
-            self.execution_section.setVisible(True)
-        self.execution_section.add_tool_call(tool_name)
+        section = self._ensure_execution_section()
+        section.add_tool_call(tool_name)
         self.status_label.setText(tr('exec.tool', tool_name))
     
     def add_tool_result(self, tool_name: str, result: str):
         """添加工具结果"""
         success = not result.startswith("[err]") and not result.startswith("错误") and not result.startswith("Error")
         clean_result = result.removeprefix("[ok] ").removeprefix("[err] ")
-        self.execution_section.set_tool_result(tool_name, clean_result, success)
+        section = self._ensure_execution_section()
+        section.set_tool_result(tool_name, clean_result, success)
+
+    def add_execution_detail(self, widget: QtWidgets.QWidget):
+        """Add a supplementary execution widget inside the current collapsible block."""
+        section = self._ensure_execution_section()
+        widget.setParent(section)
+        section.add_detail_widget(widget)
+
+    def add_viewport_snapshot(self, label: str, b64_data: str, media_type: str = 'image/jpeg'):
+        """Render a clickable viewport thumbnail inside the current execution block."""
+        if not b64_data:
+            return
+        try:
+            raw = base64.b64decode(b64_data)
+        except Exception:
+            return
+        full_pixmap = QtGui.QPixmap()
+        if not full_pixmap.loadFromData(raw) or full_pixmap.isNull():
+            return
+
+        row = QtWidgets.QWidget()
+        row.setObjectName("viewportSnapshotRow")
+        layout = QtWidgets.QHBoxLayout(row)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(6)
+
+        thumb = full_pixmap.scaled(
+            96, 54,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation,
+        )
+        img = ClickableImageLabel(thumb, full_pixmap, row)
+        img.setObjectName("imgThumb")
+        layout.addWidget(img)
+
+        caption = QtWidgets.QLabel(label or "Viewport snapshot")
+        caption.setObjectName("toolResultLabel")
+        caption.setWordWrap(True)
+        layout.addWidget(caption, 1)
+        self.add_execution_detail(row)
     
     def _apply_line_spacing(self, percent: int = 160):
         """为 QPlainTextEdit 设置 proportional 行间距。
@@ -1608,19 +1682,19 @@ class AIResponse(QtWidgets.QWidget):
         
         elapsed = time.time() - self._start_time
         
-        if self._has_thinking:
-            self.thinking_section.finalize()
+        for section in self._thinking_sections:
+            section.finalize()
         
         # 完成执行区块
-        if self._has_execution:
-            self.execution_section.finalize()
+        for section in self._execution_sections:
+            section.finalize()
         
         # 更新状态
         parts = []
         if self._has_thinking:
             parts.append(tr('status.thinking'))
         if self._has_execution:
-            tool_count = len(self.execution_section._tool_calls)
+            tool_count = sum(len(section._tool_calls) for section in self._execution_sections)
             parts.append(tr('status.calls', tool_count))
         
         status_text = tr('status.done', _fmt_duration(elapsed))

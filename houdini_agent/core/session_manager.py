@@ -85,7 +85,20 @@ class SessionManagerMixin:
         chat_layout = QtWidgets.QVBoxLayout(chat_container)
         chat_layout.setContentsMargins(4, 8, 4, 8)
         chat_layout.setSpacing(0)
-        chat_layout.addStretch()
+        chat_layout.setSizeConstraint(QtWidgets.QLayout.SetMinAndMaxSize)
+
+        # Keep a stable insertion anchor without adding an expanding stretch.
+        # The old stretch consumed all spare height, which made short sessions
+        # look like they contained a huge blank message.
+        chat_end_marker = QtWidgets.QWidget(chat_container)
+        chat_end_marker.setObjectName("chatEndMarker")
+        chat_end_marker.setProperty("chatEndMarker", True)
+        chat_end_marker.setFixedHeight(0)
+        chat_end_marker.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        chat_layout.addWidget(chat_end_marker)
         
         chat_container.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,

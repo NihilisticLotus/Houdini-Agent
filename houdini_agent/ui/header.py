@@ -10,7 +10,7 @@ import json
 import math
 
 from houdini_agent.qt_compat import QtWidgets, QtCore, QtGui
-from houdini_agent.utils.ai_client import normalize_custom_chat_url, normalize_custom_models_url
+from houdini_agent.utils.ai_client import AIClient, normalize_custom_chat_url, normalize_custom_models_url
 from .i18n import tr, get_language, set_language, language_changed
 from .theme_engine import ThemeEngine
 
@@ -69,18 +69,27 @@ def _visible_profile_models(profile: dict) -> list:
     return models
 
 
-def _flatten_custom_models(profiles: list) -> list:
-    counts = {}
-    for profile in profiles or []:
-        for model in _visible_profile_models(profile):
-            counts[model] = counts.get(model, 0) + 1
+def _dedupe_custom_profile_names(profiles: list) -> list:
+    used = set()
+    for idx, profile in enumerate(profiles or [], start=1):
+        base = str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}'
+        name = base
+        suffix = 2
+        while name in used:
+            name = f"{base} {suffix}"
+            suffix += 1
+        profile['name'] = name
+        used.add(name)
+    return profiles
 
+
+def _flatten_custom_models(profiles: list) -> list:
     models = []
     seen = set()
     for profile in profiles or []:
         profile_name = profile.get('name', 'Custom')
         for model in _visible_profile_models(profile):
-            label = f"{profile_name} / {model}" if counts.get(model, 0) > 1 else model
+            label = f"{profile_name} / {model}"
             if label and label not in seen:
                 models.append(label)
                 seen.add(label)
@@ -388,14 +397,10 @@ class HeaderMixin:
         return header
 
     def _register_custom_model_features(self, profiles: list):
-        model_counts = {}
-        for profile in profiles or []:
-            for model in _visible_profile_models(profile):
-                model_counts[model] = model_counts.get(model, 0) + 1
         for profile in profiles or []:
             profile_name = profile.get('name', 'Custom')
             for model in _visible_profile_models(profile):
-                label = f"{profile_name} / {model}" if model_counts.get(model, 0) > 1 else model
+                label = f"{profile_name} / {model}"
                 self._model_context_limits[label] = profile.get('context_limit', 128000)
                 self._model_features[label] = {
                     'supports_prompt_caching': True,
@@ -407,6 +412,10 @@ class HeaderMixin:
         menu = QtWidgets.QMenu(self)
         
         menu.addAction(tr("menu.api_key"), self.btn_key.click)
+        menu.addAction(
+            tr("menu.retry_limit", self._current_retry_limit()),
+            self._open_retry_settings,
+        )
         menu.addAction(tr("menu.clear_chat"), self.btn_clear.click)
         menu.addAction(tr("menu.cache"), self.btn_cache.click)
         menu.addAction(tr("menu.optimize"), self.btn_optimize.click)
@@ -442,6 +451,49 @@ class HeaderMixin:
         
         # 弹出位置：溢出按钮下方
         menu.exec_(self._overflow_anchor_pos())
+
+    def _current_retry_limit(self) -> int:
+        client = getattr(self, 'client', None)
+        if client is not None and hasattr(client, 'retry_limit'):
+            return client.retry_limit()
+        return AIClient.DEFAULT_RETRY_LIMIT
+
+    def _load_retry_preference(self):
+        settings = QtCore.QSettings("HoudiniAI", "Assistant")
+        retries = settings.value("retry_limit", AIClient.DEFAULT_RETRY_LIMIT)
+        retries = AIClient.clamp_retry_limit(retries)
+        client = getattr(self, 'client', None)
+        if client is not None and hasattr(client, 'set_retry_limit'):
+            client.set_retry_limit(retries)
+        return retries
+
+    def _save_retry_preference(self, retries: int):
+        retries = AIClient.clamp_retry_limit(retries)
+        settings = QtCore.QSettings("HoudiniAI", "Assistant")
+        settings.setValue("retry_limit", retries)
+        client = getattr(self, 'client', None)
+        if client is not None and hasattr(client, 'set_retry_limit'):
+            client.set_retry_limit(retries)
+        return retries
+
+    def _open_retry_settings(self):
+        current = self._current_retry_limit()
+        retries, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            tr("retry.title"),
+            tr("retry.prompt", AIClient.MAX_RETRY_LIMIT),
+            current,
+            AIClient.MIN_RETRY_LIMIT,
+            AIClient.MAX_RETRY_LIMIT,
+            1,
+        )
+        if not ok:
+            return
+        retries = self._save_retry_preference(retries)
+        try:
+            self._show_toast(tr("retry.applied", retries), 1800)
+        except Exception:
+            pass
 
     def _overflow_anchor_pos(self):
         """Return a stable global popup position near the visible overflow button."""
@@ -693,6 +745,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self.setMinimumWidth(460)
         self.setObjectName("customProviderDialog")
         self._profiles = self._profiles_from_config(current_config)
+        self._profiles = _dedupe_custom_profile_names(self._profiles)
         self._profile_index = 0
         self._loading_profile = False
         self._build_ui(current_config)
@@ -736,9 +789,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._profile_combo = QtWidgets.QComboBox()
         self._profile_combo.setMinimumHeight(28)
         self._profile_combo.setEditable(True)
+        self._profile_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
         self._profile_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         for profile in self._profiles:
             self._profile_combo.addItem(profile.get('name', 'Custom'))
+        self._profile_combo.editTextChanged.connect(self._on_profile_name_edited)
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         profile_row.addWidget(self._profile_combo, 1)
 
@@ -923,7 +978,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         if not self._profiles:
             return
         idx = max(0, min(self._profile_index, len(self._profiles) - 1))
-        name = self._profile_combo.currentText().strip() or f'Custom {idx + 1}'
+        if self._profile_combo.currentIndex() == idx:
+            name = self._profile_combo.currentText().strip()
+        else:
+            name = str(self._profiles[idx].get('name') or self._profile_combo.itemText(idx)).strip()
+        name = name or f'Custom {idx + 1}'
         self._profiles[idx] = {
             'name': name,
             'api_url': self._url_edit.text().strip(),
@@ -934,7 +993,8 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'supports_vision': self._chk_vision.isChecked(),
             'supports_fc': self._chk_fc.isChecked(),
         }
-        self._profile_combo.setItemText(idx, name)
+        if self._profile_combo.itemText(idx) != name:
+            self._profile_combo.setItemText(idx, name)
 
     def _load_profile(self, index: int):
         if index < 0 or index >= len(self._profiles):
@@ -953,6 +1013,16 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         finally:
             self._loading_profile = False
 
+    def _on_profile_name_edited(self, text: str):
+        if self._loading_profile or not self._profiles:
+            return
+        idx = self._profile_index
+        if idx < 0 or idx >= len(self._profiles):
+            return
+        name = (text or '').strip()
+        if name:
+            self._profiles[idx]['name'] = name
+
     def _on_profile_changed(self, index: int):
         if self._loading_profile or index < 0 or index == self._profile_index:
             return
@@ -963,8 +1033,13 @@ class _CustomProviderDialog(QtWidgets.QDialog):
     def _add_profile(self):
         self._save_current_profile()
         index = len(self._profiles) + 1
+        existing_names = {str(p.get('name') or '').strip() for p in self._profiles}
+        profile_name = f'Custom {index}'
+        while profile_name in existing_names:
+            index += 1
+            profile_name = f'Custom {index}'
         profile = {
-            'name': f'Custom {index}',
+            'name': profile_name,
             'api_url': '',
             'api_key': '',
             'models': [],
@@ -1130,10 +1205,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
     def _on_accept(self):
         """确认前校验必填项"""
         self._save_current_profile()
-        profiles = [
+        profiles = _dedupe_custom_profile_names([
             p for p in _normalize_custom_profiles(self._profiles)
             if p.get('api_url') or p.get('models')
-        ]
+        ])
+        self._profiles = profiles
         if not profiles or any(not p.get('api_url') for p in profiles):
             QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_url_plain"))
             return
@@ -1145,10 +1221,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
     def get_config(self) -> dict:
         """返回用户配置的字典"""
         self._save_current_profile()
-        profiles = [
+        profiles = _dedupe_custom_profile_names([
             p for p in _normalize_custom_profiles(self._profiles)
             if p.get('api_url') or p.get('models')
-        ]
+        ])
+        self._profiles = profiles
         primary = profiles[0] if profiles else {}
         models = _flatten_custom_models(profiles)
         return {

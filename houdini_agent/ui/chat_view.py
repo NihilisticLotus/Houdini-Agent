@@ -22,6 +22,41 @@ from .cursor_widgets import (
 class ChatViewMixin:
     """对话显示、滚动逻辑"""
 
+    def _chat_end_index(self, layout=None) -> int:
+        """Return the insertion index before the fixed end marker."""
+        layout = layout or self.chat_layout
+        count = layout.count()
+        if count <= 0:
+            return 0
+        item = layout.itemAt(count - 1)
+        widget = item.widget() if item else None
+        if widget is not None and widget.property("chatEndMarker"):
+            return count - 1
+        return count
+
+    def _insert_chat_widget(self, widget, layout=None, index: int = None):
+        """Insert a widget into the chat stream before the end marker."""
+        layout = layout or self.chat_layout
+        if index is None:
+            index = self._chat_end_index(layout)
+        layout.insertWidget(index, widget)
+        return widget
+
+    def _clear_chat_widgets(self, layout=None):
+        """Remove rendered chat widgets while keeping the end marker."""
+        layout = layout or self.chat_layout
+        i = 0
+        while i < layout.count():
+            item = layout.itemAt(i)
+            widget = item.widget() if item else None
+            if widget is not None and widget.property("chatEndMarker"):
+                i += 1
+                continue
+            item = layout.takeAt(i)
+            widget = item.widget() if item else None
+            if widget:
+                widget.deleteLater()
+
     def _image_tuple_from_b64(self, b64_data: str, media_type: str = 'image/png', thumb_size: int = 60):
         """Build the internal clickable-image tuple from base64 image data."""
         if not b64_data:
@@ -86,7 +121,7 @@ class ChatViewMixin:
                 lbl.setObjectName("imgThumb")
                 image_widgets.append(lbl)
             msg.add_image_widgets(image_widgets)
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+        self._insert_chat_widget(msg)
         self._scroll_to_bottom()
         return msg
 
@@ -98,7 +133,7 @@ class ChatViewMixin:
         response.deleteRequested.connect(self._delete_history_range)
         if history_range:
             response.set_history_range(*history_range)
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, response)
+        self._insert_chat_widget(response)
         self._current_response = response
         self._scroll_to_bottom(force=True)
         return response
@@ -189,9 +224,8 @@ class ChatViewMixin:
     def _show_toast(self, text: str, duration_ms: int = 3000):
         """在聊天区域底部显示临时提示，自动消失"""
         toast = StatusLine(text)
-        # ★ 必须用 insertWidget 插到 stretch 之前，
-        #   否则 addWidget 会放到 stretch 之后，导致后续消息也在 stretch 后面产生空白间隙
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, toast)
+        # Insert into the chat stream instead of appending after the end anchor.
+        self._insert_chat_widget(toast)
         self._scroll_to_bottom(force=True)
         def _remove():
             try:
