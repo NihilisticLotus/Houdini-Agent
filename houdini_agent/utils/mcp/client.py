@@ -29,7 +29,7 @@ if os.path.exists(_lib_path):
     # 将 lib 目录添加到 sys.path 最前面，确保优先使用
     if _lib_path in sys.path:
         sys.path.remove(_lib_path)
-    sys.path.insert(0, _lib_path)
+    sys.path.append(_lib_path)
 
 # 导入 requests
 try:

@@ -424,6 +424,14 @@ QScrollArea#chatScrollArea {
     border: none;
     background: transparent;
 }
+QWidget#chatScrollViewport,
+QWidget#chatContainer {
+    background: qlineargradient(x1:0, y1:0, x2:0.3, y2:1,
+                    stop:0 #0f1019, stop:0.5 #0d0f1a, stop:1 #0a1018);
+}
+QWidget#chatEndMarker {
+    background: transparent;
+}
 QScrollArea#chatScrollArea QScrollBar:vertical {
     background: rgba(36,30,22,120);
     width: 10px;
@@ -508,6 +516,12 @@ QPushButton#userMsgToggle:hover {
    7. CHAT AREA - AI Response (glass card)
    ============================================================ */
 
+QWidget#aiResponse,
+QWidget#aiFrozenContainer,
+QWidget#nodeOperationLabel,
+QWidget#viewportSnapshotRow {
+    background: transparent;
+}
 QFrame#aiSummary {
     background: rgba(12,14,25,80);
     border-left: 2px solid rgba(167,139,250,40);
@@ -516,6 +530,27 @@ QFrame#aiSummary {
 QLabel#aiStatusLabel {
     color: #64748b;
     font-size: {FS_CHAT}px;
+}
+QWidget#turnTraceHeader {
+    background: transparent;
+    padding: 0;
+}
+QPushButton#turnTraceToggle {
+    color: #7a8392;
+    font-size: {FS_SM}px;
+    text-align: left;
+    padding: 3px 0;
+    border: none;
+    background: transparent;
+}
+QPushButton#turnTraceToggle:hover {
+    color: #b8c2d2;
+}
+QFrame#turnTraceLine {
+    color: rgba(148,163,184,22);
+    background: rgba(148,163,184,22);
+    max-height: 1px;
+    border: none;
 }
 QPushButton#aiCopyBtn {
     color: #94a3b8;

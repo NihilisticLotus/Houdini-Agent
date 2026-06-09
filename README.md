@@ -17,6 +17,9 @@ Compared with upstream [`Kazama-Suichiku/Houdini-Agent`](https://github.com/Kaza
 - **Anthropic Messages for Custom providers** — Custom profiles can choose either OpenAI-compatible Chat Completions or Anthropic Messages protocol; `/chat/completions`, `/messages`, and `/models` URLs are normalized automatically, with Anthropic `x-api-key` and `anthropic-version` headers handled by the client.
 - **Stable Custom model selection** — the main model selector is a fixed drop-down populated from enabled profile models, while profile editing keeps profile selection separate from name editing to avoid accidental overwrites.
 - **Richer agent timeline** — interleaved thinking, tool execution, viewport checkpoints, and final replies stay in order; verbose execution details such as tool calls, node diffs, shell previews, and viewport snapshots are collapsed by default.
+- **Unified execution trace header** — consecutive thinking/tool details are grouped under one collapsible per-turn trace with live `Processing` time and final `Processed` duration, instead of creating a separate fold for every operation.
+- **Better chat bubble reflow** — sent-message bubbles now estimate their ideal width from text and thumbnail content, using more available horizontal space while still capping long content to prevent layout overflow.
+- **Windows UTF-8 request safety** — standalone launch and AI requests force UTF-8 stdio/body encoding and remove emoji from request-path diagnostics, avoiding GBK console encoding failures on Windows.
 - **Retry and stop handling** — transient API failures use a configurable retry limit with retry logs in the response, and stopped runs preserve partial thinking/execution history instead of losing the in-progress trace.
 - **Chat/session polish** — per-message delete actions, long-text reflow on resize, clickable sent-image and `capture_viewport` thumbnails, automatic/manual session titles, and safer session cache updates are included.
 - **Workflow experience review** — completed tasks queue multiple distilled experience candidates, support rejected-item hide/delete, and can export curated semantic/procedural experiences to Markdown.
@@ -98,6 +101,8 @@ Existing older single-profile Custom settings are migrated into the new profile 
 - **AuroraBar** — animated silver-white flowing gradient bar during AI generation
 - **Streaming VEX code preview** — real-time Cursor Apply-style code writing animation
 - **Structured response timeline** — thinking blocks, tool execution, retries, viewport checkpoints, and final replies remain ordered while detailed execution widgets stay collapsible
+- **Per-turn trace folding** — one compact header controls the whole thinking/tool trace for a response and keeps elapsed time visible after completion
+- **Adaptive message bubbles** — user bubbles widen according to their content and attached images, reducing unnecessary wrapping without reintroducing overflow
 - Multi-session tabs — run multiple independent conversations
 - Automatic and manual session titles
 - Copy button on AI responses

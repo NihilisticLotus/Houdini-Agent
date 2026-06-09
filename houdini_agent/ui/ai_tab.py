@@ -119,15 +119,27 @@ class AITab(
     _updatePlanStep = QtCore.Signal(str, str, str)   # Plan 模式：更新步骤状态 (step_id, status, result_summary)
     _askQuestionRequest = QtCore.Signal()             # Plan 模式：ask_question 请求（参数通过属性传递）
     
-    def __init__(self, parent=None, workspace_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        parent=None,
+        workspace_dir: Optional[Path] = None,
+        embedded: bool = True,
+        mcp_client=None,
+        bridge_url: str = "",
+    ):
         super().__init__(parent)
+        self._embedded_mode = bool(embedded)
+        self._bridge_url = bridge_url or ""
 
         # 启动断点日志：用于诊断冷启动 freeze（参见 issue #9）
         print("[AITab] init: begin")
         self.client = AIClient()
         self._load_retry_preference()
-        self.mcp = HoudiniMCP()
+        self.mcp = mcp_client if mcp_client is not None else HoudiniMCP()
+        self._local_mcp = self.mcp if self._embedded_mode else HoudiniMCP()
         self.mcp.set_stop_event(self.client._stop_event)  # 共享停止事件，使 shell/python 命令可被中断
+        if self._local_mcp is not self.mcp:
+            self._local_mcp.set_stop_event(self.client._stop_event)
         self.client.set_tool_executor(self._execute_tool_with_todo)
         self.client.set_batch_tool_executor(self._execute_tools_batch_in_main_thread)
         
@@ -1959,6 +1971,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         策略：只 cook 当前 /obj 下各 geo 容器中设置了 Display Flag 的节点。
         这是最小范围的 cook，只刷新 AI 关注的节点数据而不触发全场景 cook。
         """
+        if not getattr(self, '_embedded_mode', True):
+            return
         if getattr(self, '_pre_agent_update_mode', None) is None:
             return  # 不在 Agent cook 保护模式下，无需处理
         try:
@@ -1992,6 +2006,9 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         cook 阻塞主线程。Agent 结束后在此统一恢复用户原始的更新模式，
         此时 Houdini 会自动触发一次 cook 展示最终结果。
         """
+        if not getattr(self, '_embedded_mode', True):
+            self._pre_agent_update_mode = None
+            return
         _user_mode = getattr(self, '_pre_agent_update_mode', None)
         if _user_mode is not None:
             try:
@@ -2508,7 +2525,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         仅用于不依赖 hou 模块的工具，如 execute_shell、search_local_doc 等。
         """
         try:
-            return self.mcp.execute_tool(tool_name, kwargs)
+            return self._local_mcp.execute_tool(tool_name, kwargs)
         except Exception as e:
             import traceback
             return {"success": False, "error": tr('ai.bg_exec_err', f"{e}\n{traceback.format_exc()[:300]}")}
@@ -2537,6 +2554,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         主线程槽函数执行完毕后自动清除标记。
         """
         # 使用锁确保一次只有一个工具调用（避免并发竞争）
+        if not getattr(self, '_embedded_mode', True):
+            return self.mcp.execute_tool(tool_name, kwargs)
         with self._tool_lock:
             # 清空队列（防止残留数据）
             while not self._tool_result_queue.empty():
@@ -2578,6 +2597,15 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         Returns:
             [result_dict, ...]（与 batch 顺序一致）
         """
+        if not getattr(self, '_embedded_mode', True):
+            results = []
+            for tool_name, kwargs in batch:
+                try:
+                    results.append(self.mcp.execute_tool(tool_name, kwargs))
+                except Exception as e:
+                    results.append({"success": False, "error": str(e)})
+            return results
+
         with self._tool_lock:
             while not self._tool_result_queue.empty():
                 try:
@@ -3806,10 +3834,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         self._start_active_aurora()
         
         # ★ 记录用户当前的 Houdini 更新模式（Agent 结束后恢复）
-        try:
-            import hou  # type: ignore
-            self._pre_agent_update_mode = hou.updateModeSetting()
-        except Exception:
+        if getattr(self, '_embedded_mode', True):
+            try:
+                import hou  # type: ignore
+                self._pre_agent_update_mode = hou.updateModeSetting()
+            except Exception:
+                self._pre_agent_update_mode = None
+        else:
             self._pre_agent_update_mode = None
         
         # ⚠️ 在主线程中获取所有 Qt 控件的值（后台线程不能直接访问）
@@ -4925,6 +4956,12 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
     
     def _navigate_to_node(self, node_path: str):
         """点击节点标签时，跳转到该节点并选中"""
+        if not getattr(self, '_embedded_mode', True):
+            try:
+                self._show_toast(f"Standalone UI cannot focus Houdini node directly: {node_path}")
+            except Exception:
+                pass
+            return
         try:
             import hou
             node = hou.node(node_path)
@@ -5090,6 +5127,9 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         - delete 操作 → 从快照递归重建该节点及所有子节点
         - modify 操作 → 恢复参数旧值
         """
+        if not getattr(self, '_embedded_mode', True):
+            self._show_toast("Standalone UI cannot undo Houdini node operations directly yet")
+            return
         try:
             import hou
         except ImportError:
@@ -5682,7 +5722,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
     def _slash_skills(self):
         """/skills — 列出所有技能"""
-        result = self.mcp._tool_list_skills({})
+        result = self._local_mcp._tool_list_skills({})
         self._add_user_message("[/skills]")
         resp = self._add_ai_response()
         if result.get('success'):
@@ -6025,6 +6065,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
     def _refresh_node_context(self):
         """刷新节点上下文栏（显示当前网络路径和选中节点）"""
+        if not getattr(self, '_embedded_mode', True):
+            try:
+                ctx = self.mcp.scene_context(timeout=2.0) if hasattr(self.mcp, "scene_context") else {}
+            except Exception:
+                ctx = {}
+            self.node_context_bar.update_context(ctx.get("network_path") or "/obj", ctx.get("selected_names") or [])
+            return
         try:
             import hou
             # 获取当前网络编辑器的工作路径
@@ -6047,6 +6094,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         返回场景上下文 dict，传给后台线程的 _auto_rag_retrieve 使用。
         包含：当前网络路径、选中节点类型、选中节点名。
         """
+        if not getattr(self, '_embedded_mode', True):
+            try:
+                if hasattr(self.mcp, "scene_context"):
+                    return self.mcp.scene_context(timeout=2.0)
+            except Exception:
+                pass
+            return {'network_path': '', 'selected_types': [], 'selected_names': []}
         ctx = {'network_path': '', 'selected_types': [], 'selected_names': []}
         try:
             import hou  # type: ignore

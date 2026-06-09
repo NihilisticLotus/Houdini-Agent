@@ -262,6 +262,54 @@ class CollapsibleSection(QtWidgets.QWidget):
         return label
 
 
+class TurnTraceHeader(QtWidgets.QWidget):
+    """One-line controller for a response's thinking/tool trace."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._collapsed = False
+        self._elapsed = 0.0
+        self._targets: List[QtWidgets.QWidget] = []
+        self.setObjectName("turnTraceHeader")
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(6)
+
+        self._button = QtWidgets.QPushButton()
+        self._button.setFlat(True)
+        self._button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._button.setObjectName("turnTraceToggle")
+        self._button.clicked.connect(self.toggle)
+        layout.addWidget(self._button)
+
+        self._line = QtWidgets.QFrame()
+        self._line.setFrameShape(QtWidgets.QFrame.HLine)
+        self._line.setObjectName("turnTraceLine")
+        layout.addWidget(self._line, 1)
+        self.set_elapsed(0.0, active=True)
+
+    def add_target(self, widget: QtWidgets.QWidget):
+        if widget not in self._targets:
+            self._targets.append(widget)
+            widget.setVisible(not self._collapsed)
+
+    def set_elapsed(self, seconds: float, active: bool = False):
+        self._elapsed = max(0.0, float(seconds or 0.0))
+        label = tr("status.processing") if active else tr("status.processed")
+        arrow = "›" if self._collapsed else "⌄"
+        self._button.setText(f"{label} {_fmt_duration(self._elapsed)} {arrow}")
+
+    def toggle(self):
+        self._collapsed = not self._collapsed
+        for widget in list(self._targets):
+            try:
+                widget.setVisible(not self._collapsed)
+            except RuntimeError:
+                pass
+        self.set_elapsed(self._elapsed, active=False)
+
+
 # ============================================================
 # 脉冲指示器
 # ============================================================
@@ -974,12 +1022,35 @@ class UserMessage(QtWidgets.QWidget):
         super().resizeEvent(event)
         self._update_bubble_width()
 
+    def _ideal_content_width(self, max_content_w: int) -> int:
+        text = self.content.text() or ""
+        lines = text.splitlines() or [text]
+        fm = self.content.fontMetrics()
+        widest = 0
+        for line in lines:
+            # Ignore injected zero-width break points when estimating the preferred width.
+            widest = max(widest, fm.horizontalAdvance(line.replace("\u200b", "")))
+
+        if self._toggle_btn.isVisible():
+            widest = max(widest, self._toggle_btn.sizeHint().width())
+
+        # Image-only messages and mixed image/text messages need enough room for thumbnails.
+        for child in self._container.findChildren(QtWidgets.QWidget):
+            if child is self.content or child is self._toggle_btn or child is self._delete_btn:
+                continue
+            hint = child.sizeHint()
+            if hint.isValid():
+                widest = max(widest, hint.width())
+
+        return min(max_content_w, max(120, widest + 2))
+
     def _update_bubble_width(self):
         max_w = max(260, int(self.width() * 0.86))
-        self._container.setMaximumWidth(max_w)
         content_max = max(120, max_w - 24)
-        self.content.setMaximumWidth(content_max)
-        self.content.setMinimumWidth(0)
+        content_w = self._ideal_content_width(content_max)
+        bubble_w = min(max_w, content_w + 24)
+        self._container.setFixedWidth(bubble_w)
+        self.content.setFixedWidth(max(120, bubble_w - 24))
         self._container.updateGeometry()
 
     def add_image_widgets(self, image_widgets: list):
@@ -1095,6 +1166,8 @@ class AIResponse(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("aiResponse")
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.setMinimumWidth(0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
@@ -1106,6 +1179,7 @@ class AIResponse(QtWidgets.QWidget):
         self._has_thinking = False
         self._has_execution = False
         self._execution_batch_open = False
+        self._trace_header = None
         self._shell_count = 0  # Python Shell 执行计数
         
         # ★ 增量渲染状态
@@ -1196,6 +1270,8 @@ class AIResponse(QtWidgets.QWidget):
         
         # ★ 已冻结段落容器 — 增量渲染时冻结的富文本/代码块放在这里
         self._frozen_container = QtWidgets.QWidget()
+        self._frozen_container.setObjectName("aiFrozenContainer")
+        self._frozen_container.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self._frozen_container.setMinimumWidth(0)
         self._frozen_layout = QtWidgets.QVBoxLayout(self._frozen_container)
         self._frozen_layout.setContentsMargins(0, 0, 0, 0)
@@ -1243,6 +1319,13 @@ class AIResponse(QtWidgets.QWidget):
         self.details_layout = QtWidgets.QVBoxLayout()
         self.details_layout.setSpacing(2)
         layout.addLayout(self.details_layout)
+
+    def _ensure_trace_header(self) -> TurnTraceHeader:
+        if self._trace_header is None:
+            header = TurnTraceHeader(self)
+            self._timeline_layout.insertWidget(0, header)
+            self._trace_header = header
+        return self._trace_header
 
     def _available_content_width(self) -> int:
         margins = self._summary_layout.contentsMargins()
@@ -1300,7 +1383,9 @@ class AIResponse(QtWidgets.QWidget):
             return self._timeline_layout.count()
 
     def _insert_timeline_widget(self, widget: QtWidgets.QWidget):
+        header = self._ensure_trace_header()
         self._timeline_layout.insertWidget(self._timeline_insert_index(), widget)
+        header.add_target(widget)
         return widget
 
     def start_thinking_round(self) -> ThinkingSection:
@@ -1345,6 +1430,8 @@ class AIResponse(QtWidgets.QWidget):
     
     def update_thinking_time(self):
         """更新思考时间（思考结束后不再更新状态标签）"""
+        if self._trace_header is not None:
+            self._trace_header.set_elapsed(time.time() - self._start_time, active=True)
         if self._has_thinking and self.thinking_section is not None:
             if self.thinking_section._finalized:
                 return  # 思考已结束，不再更新
@@ -1380,7 +1467,6 @@ class AIResponse(QtWidgets.QWidget):
             tool_name = text[6:].strip()
             self._add_tool_call(tool_name)
         else:
-            self._close_execution_batch_if_complete()
             self.status_label.setText(UserMessage._soft_wrap_text(text))
             QtCore.QTimer.singleShot(0, self._sync_content_widths)
     
@@ -1388,6 +1474,8 @@ class AIResponse(QtWidgets.QWidget):
         """添加工具调用"""
         section = self._ensure_execution_section()
         section.add_tool_call(tool_name)
+        if self._trace_header is not None:
+            self._trace_header.set_elapsed(time.time() - self._start_time, active=True)
         self.status_label.setText(tr('exec.tool', tool_name))
     
     def add_tool_result(self, tool_name: str, result: str):
@@ -1396,6 +1484,8 @@ class AIResponse(QtWidgets.QWidget):
         clean_result = result.removeprefix("[ok] ").removeprefix("[err] ")
         section = self._ensure_execution_section()
         section.set_tool_result(tool_name, clean_result, success)
+        if self._trace_header is not None:
+            self._trace_header.set_elapsed(time.time() - self._start_time, active=True)
 
     def add_execution_detail(self, widget: QtWidgets.QWidget):
         """Add a supplementary execution widget inside the current collapsible block."""
@@ -1417,6 +1507,7 @@ class AIResponse(QtWidgets.QWidget):
 
         row = QtWidgets.QWidget()
         row.setObjectName("viewportSnapshotRow")
+        row.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(6)
@@ -1483,7 +1574,8 @@ class AIResponse(QtWidgets.QWidget):
         # 丢弃它们会导致多段内容粘连在一起
         if not text.strip() and '\n' not in text:
             return
-        self._close_execution_batch_if_complete()
+        if text.strip():
+            self._close_execution_batch_if_complete()
         # 清除 U+FFFD 替换符（encoding 异常残留）
         if '\ufffd' in text:
             text = text.replace('\ufffd', '')
@@ -1718,6 +1810,8 @@ class AIResponse(QtWidgets.QWidget):
         self._table_flush_timer.stop()
         
         elapsed = time.time() - self._start_time
+        if self._trace_header is not None:
+            self._trace_header.set_elapsed(elapsed, active=False)
         
         for section in self._thinking_sections:
             section.finalize()
@@ -1740,6 +1834,8 @@ class AIResponse(QtWidgets.QWidget):
             status_text += f" | {', '.join(parts)}"
         
         self.status_label.setText(status_text)
+        if self._trace_header is not None:
+            self.status_label.setVisible(False)
         
         # 有内容时显示复制按钮
         if self._clean_content(self._content):
@@ -1820,6 +1916,8 @@ class NodeOperationLabel(QtWidgets.QWidget):
             param_diff: 参数 diff 信息 {"param_name": str, "old_value": Any, "new_value": Any}
         """
         super().__init__(parent)
+        self.setObjectName("nodeOperationLabel")
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self._node_paths = node_paths or []
         self._decided = False  # 用户是否已做出选择
         

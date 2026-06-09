@@ -15,13 +15,21 @@ from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 from shared.common_utils import load_config, save_config
 
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 # 强制使用本地 lib 目录中的依赖库
 _lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'lib')
 if os.path.exists(_lib_path):
     # 将 lib 目录添加到 sys.path 最前面，确保优先使用
     if _lib_path in sys.path:
         sys.path.remove(_lib_path)
-    sys.path.insert(0, _lib_path)
+    sys.path.append(_lib_path)
 
 # 导入 requests
 HAS_REQUESTS = False
@@ -1513,12 +1521,17 @@ class AIClient:
         # ★ 持久化 HTTP Session（连接池 + Keep-Alive，避免每轮重新 TLS 握手）
         self._http_session = requests.Session()
         self._http_session.headers.update({
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
         })
         
         # 停止控制（使用 threading.Event 保证线程安全）
         import threading
         self._stop_event = threading.Event()
+
+    @staticmethod
+    def _json_body(payload: Dict[str, Any]) -> bytes:
+        """Serialize request JSON as UTF-8 bytes to avoid Windows locale encoders."""
+        return json.dumps(payload, ensure_ascii=False).encode('utf-8')
     
     def request_stop(self):
         """请求停止当前请求（线程安全）"""
@@ -2185,7 +2198,7 @@ class AIClient:
         # ── 第 1 步：标记过时的工具结果 ──
         stale_count = self._mark_stale_tool_results(working_messages)
         if stale_count > 0:
-            print(f"[AI Client] 🔄 标记了 {stale_count} 个过时工具结果")
+            print(f"[AI Client] Marked {stale_count} stale tool results")
 
         current = self._estimate_messages_tokens(working_messages)
         if current <= target:
@@ -2194,7 +2207,7 @@ class AIClient:
         # ── 第 2 步：剥离旧轮次图片 ──
         n_stripped = self._strip_image_content(working_messages, keep_recent_user=2)
         if n_stripped > 0:
-            print(f"[AI Client] 🖼 剥离了 {n_stripped} 张旧图片")
+            print(f"[AI Client] Stripped {n_stripped} old images")
             current = self._estimate_messages_tokens(working_messages)
             if current <= target:
                 return working_messages
@@ -2290,7 +2303,7 @@ class AIClient:
             hint += '\n请继续当前任务，不要提及此压缩。'
             result.insert(insert_idx, {'role': 'system', 'content': hint})
 
-        print(f"[AI Client] 🗜️ 主动压缩: {n_rounds} 轮 → {len(rounds)} 轮, "
+        print(f"[AI Client] Proactive compression: {n_rounds} rounds -> {len(rounds)} rounds, "
               f"~{self._estimate_messages_tokens(result)} tokens (目标 {target})")
 
         return result
@@ -2370,7 +2383,7 @@ class AIClient:
                 result.extend(rnd)
 
             new_tokens = self._estimate_messages_tokens(result)
-            print(f"[AI Client] 📝 LLM 摘要: {n_rounds} 轮 → 摘要 + {len(to_keep)} 轮, "
+            print(f"[AI Client] LLM summary: {n_rounds} rounds -> summary + {len(to_keep)} rounds, "
                   f"~{new_tokens} tokens")
 
             return result
@@ -2708,12 +2721,12 @@ class AIClient:
         
         try:
             if HAS_REQUESTS:
-                headers = {'Content-Type': 'application/json'}
+                headers = {'Content-Type': 'application/json; charset=utf-8'}
                 if api_key:
                     headers['Authorization'] = f'Bearer {api_key}'
                 response = self._http_session.post(
                     self._get_api_url(provider, default_model),
-                    json={'model': default_model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1},
+                    data=self._json_body({'model': default_model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 1}),
                     headers=headers,
                     timeout=15,
                     proxies={'http': None, 'https': None}
@@ -3065,7 +3078,7 @@ class AIClient:
         
         # 请求头（Anthropic 格式）
         headers = {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
             'Accept': 'text/event-stream',
             'x-api-key': api_key,
             'anthropic-version': '2023-06-01',
@@ -3077,7 +3090,7 @@ class AIClient:
             try:
                 with self._http_session.post(
                     api_url,
-                    json=payload,
+                    data=self._json_body(payload),
                     headers=headers,
                     stream=True,
                     timeout=(10, self._chunk_timeout),
@@ -3162,7 +3175,7 @@ class AIClient:
                                 if thinking:
                                     if not _got_thinking:
                                         _got_thinking = True
-                                        print(f"[AI Client] 🧠 Anthropic thinking (首个 chunk, len={len(thinking)}, enable={_enable_thinking_flag})")
+                                        print(f"[AI Client] Anthropic thinking (first chunk, len={len(thinking)}, enable={_enable_thinking_flag})")
                                     if _enable_thinking_flag:
                                         results.append({"type": "thinking", "content": thinking})
                             
@@ -3341,7 +3354,7 @@ class AIClient:
                 payload['tool_choice'] = {'type': 'auto'}
         
         headers = {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
             'x-api-key': api_key,
             'anthropic-version': '2023-06-01',
         }
@@ -3349,7 +3362,7 @@ class AIClient:
         for attempt in range(self._max_retries):
             try:
                 response = self._http_session.post(
-                    api_url, json=payload, headers=headers,
+                    api_url, data=self._json_body(payload), headers=headers,
                     timeout=timeout, proxies={'http': None, 'https': None}
                 )
                 response.raise_for_status()
@@ -3481,7 +3494,7 @@ class AIClient:
         
         # 构建请求头
         headers = {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
             'Accept': 'text/event-stream',
         }
         
@@ -3500,7 +3513,7 @@ class AIClient:
             try:
                 with self._http_session.post(
                     api_url,
-                    json=payload,
+                    data=self._json_body(payload),
                     headers=headers,
                     stream=True,
                     timeout=(10, self._chunk_timeout),  # (连接超时, 读取超时)
@@ -3595,7 +3608,7 @@ class AIClient:
                                 _field = ('reasoning_content' if 'reasoning_content' in delta
                                           else 'thinking_content' if 'thinking_content' in delta
                                           else 'reasoning')
-                                print(f"[AI Client] 🧠 收到 {_field}（首个 chunk，len={len(_thinking_text)}，enable_thinking={_enable_thinking}）")
+                                print(f"[AI Client] Received {_field} (first chunk, len={len(_thinking_text)}, enable_thinking={_enable_thinking})")
                             if _enable_thinking:
                                 results.append({"type": "thinking", "content": _thinking_text})
                         
@@ -3875,7 +3888,7 @@ class AIClient:
             payload['tool_choice'] = tool_choice
         
         headers = {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json; charset=utf-8',
         }
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
@@ -3898,7 +3911,7 @@ class AIClient:
             try:
                 response = self._http_session.post(
                     self._get_api_url(provider, model),
-                    json=payload,
+                    data=self._json_body(payload),
                     headers=headers,
                     timeout=timeout,
                     proxies={'http': None, 'https': None}
@@ -4673,7 +4686,7 @@ class AIClient:
                             {"type": "image_url", "image_url": {"url": f"data:{_img_mt};base64,{_img_b64}"}}
                         ]
                     })
-                    print(f"[AI Client] 📸 视口截图已注入消息 ({len(_img_b64)//1024}KB base64)")
+                    print(f"[AI Client] Viewport snapshot injected ({len(_img_b64)//1024}KB base64)")
 
             # Auto visual checkpoint:
             # Scene-changing tools only mark the viewport as needing review.
@@ -5549,7 +5562,7 @@ class AIClient:
                 _content_parts = [{"type": "text", "text": f"[TOOL_RESULT]\n{prompt}\n[viewport snapshot attached — please analyze the current viewport state]"}]
                 for _vimg_b64, _vimg_mt in _viewport_imgs:
                     _content_parts.append({"type": "image_url", "image_url": {"url": f"data:{_vimg_mt};base64,{_vimg_b64}"}})
-                    print(f"[AI Client] 📸 视口截图已注入消息 (JSON mode, {len(_vimg_b64)//1024}KB)")
+                    print(f"[AI Client] Viewport snapshot injected (JSON mode, {len(_vimg_b64)//1024}KB)")
                 working_messages.append({'role': 'user', 'content': _content_parts})
             else:
                 working_messages.append({
