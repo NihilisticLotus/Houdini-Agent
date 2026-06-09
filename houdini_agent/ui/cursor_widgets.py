@@ -902,6 +902,10 @@ class UserMessage(QtWidgets.QWidget):
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Maximum,
+        )
         self._history_range = None
         self._full_text = text
         self._collapsed = False  # 初始状态由 _maybe_collapse 决定
@@ -1077,6 +1081,10 @@ class AIResponse(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Maximum,
+        )
         self._history_range = None
         self._start_time = time.time()
         self._content = ""

@@ -10,7 +10,13 @@ import json
 import math
 
 from houdini_agent.qt_compat import QtWidgets, QtCore, QtGui
-from houdini_agent.utils.ai_client import AIClient, normalize_custom_chat_url, normalize_custom_models_url
+from houdini_agent.utils.ai_client import (
+    AIClient,
+    normalize_custom_anthropic_models_url,
+    normalize_custom_chat_url,
+    normalize_custom_messages_url,
+    normalize_custom_models_url,
+)
 from .i18n import tr, get_language, set_language, language_changed
 from .theme_engine import ThemeEngine
 
@@ -25,6 +31,21 @@ def _split_custom_models(models_text: str) -> list:
             models.append(model)
             seen.add(model)
     return models
+
+
+def _clean_custom_api_url(api_url: str) -> str:
+    """Keep URL values single-line so the line-based ini parser stays valid."""
+    return ''.join(str(api_url or '').split())
+
+
+def _strip_generated_name_suffix(name: str) -> str:
+    """Collapse repeated generated suffix chains like 'Name 2 2' back to 'Name'."""
+    parts = str(name or '').strip().split()
+    if len(parts) > 2 and parts[-1].isdigit() and parts[-2] == parts[-1]:
+        repeated = parts[-1]
+        while len(parts) > 1 and parts[-1] == repeated:
+            parts.pop()
+    return ' '.join(parts).strip()
 
 
 def _normalize_custom_profiles(profiles: list) -> list:
@@ -48,10 +69,16 @@ def _normalize_custom_profiles(profiles: list) -> list:
             context_limit = int(profile.get('context_limit') or 128000)
         except (TypeError, ValueError):
             context_limit = 128000
+        protocol = str(profile.get('protocol') or 'openai').strip().lower()
+        if protocol not in ('anthropic', 'messages', 'anthropic_messages'):
+            protocol = 'openai'
+        else:
+            protocol = 'anthropic'
         normalized.append({
             'name': name,
-            'api_url': str(profile.get('api_url') or '').strip(),
+            'api_url': _clean_custom_api_url(profile.get('api_url')),
             'api_key': str(profile.get('api_key') or '').strip(),
+            'protocol': protocol,
             'models': models,
             'enabled_models': enabled_models,
             'context_limit': context_limit,
@@ -72,7 +99,7 @@ def _visible_profile_models(profile: dict) -> list:
 def _dedupe_custom_profile_names(profiles: list) -> list:
     used = set()
     for idx, profile in enumerate(profiles or [], start=1):
-        base = str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}'
+        base = _strip_generated_name_suffix(profile.get('name')) or f'Custom {idx}'
         name = base
         suffix = 2
         while name in used:
@@ -229,6 +256,7 @@ class HeaderMixin:
         self._custom_provider_config = {
             'api_url': '',
             'api_key': '',
+            'protocol': 'openai',
             'models': [],           # 用户配置的模型名列表
             'context_limit': 128000,
             'supports_vision': False,
@@ -639,6 +667,7 @@ class HeaderMixin:
                     'name': cfg.get('custom_profile_name', 'Custom 1'),
                     'api_url': cfg.get('custom_api_url', ''),
                     'api_key': cfg.get('custom_api_key', ''),
+                    'protocol': cfg.get('custom_protocol', 'openai'),
                     'models': legacy_models,
                     'enabled_models': _split_custom_models(cfg.get('custom_enabled_models', '')),
                     'context_limit': legacy_context_limit,
@@ -675,6 +704,7 @@ class HeaderMixin:
             cfg['custom_profile_name'] = primary.get('name', 'Custom 1')
             cfg['custom_api_url'] = primary.get('api_url', '')
             cfg['custom_api_key'] = primary.get('api_key', '')
+            cfg['custom_protocol'] = primary.get('protocol', 'openai')
             cfg['custom_models'] = ','.join(_flatten_custom_models(profiles))
             cfg['custom_enabled_models'] = ','.join(primary.get('enabled_models', []))
             cfg['custom_context_limit'] = str(primary.get('context_limit', 128000))
@@ -758,6 +788,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'name': cfg.get('name', 'Custom 1'),
             'api_url': cfg.get('api_url', ''),
             'api_key': cfg.get('api_key', ''),
+            'protocol': cfg.get('protocol', 'openai'),
             'models': cfg.get('models', []),
             'enabled_models': cfg.get('enabled_models', []),
             'context_limit': cfg.get('context_limit', 128000),
@@ -788,14 +819,22 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         profile_row.setSpacing(4)
         self._profile_combo = QtWidgets.QComboBox()
         self._profile_combo.setMinimumHeight(28)
-        self._profile_combo.setEditable(True)
-        self._profile_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-        self._profile_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._profile_combo.setEditable(False)
+        self._profile_combo.setMinimumWidth(120)
+        self._profile_combo.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         for profile in self._profiles:
             self._profile_combo.addItem(profile.get('name', 'Custom'))
-        self._profile_combo.editTextChanged.connect(self._on_profile_name_edited)
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        profile_row.addWidget(self._profile_combo, 1)
+        profile_row.addWidget(self._profile_combo)
+
+        self._profile_name_edit = QtWidgets.QLineEdit()
+        self._profile_name_edit.setMinimumHeight(28)
+        self._profile_name_edit.setText(active_profile.get('name', 'Custom 1'))
+        self._profile_name_edit.setPlaceholderText("配置组名称")
+        self._profile_name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._profile_name_edit.textEdited.connect(self._on_profile_name_edited)
+        self._profile_name_edit.editingFinished.connect(self._on_profile_name_editing_finished)
+        profile_row.addWidget(self._profile_name_edit, 1)
 
         self._btn_add_profile = QtWidgets.QPushButton()
         self._btn_add_profile.setFixedSize(28, 28)
@@ -820,6 +859,14 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._url_edit.setText(active_profile.get('api_url', ''))
         self._url_edit.setMinimumHeight(28)
         form.addRow("API URL:", self._url_edit)
+
+        self._protocol_combo = QtWidgets.QComboBox()
+        self._protocol_combo.setMinimumHeight(28)
+        self._protocol_combo.addItem("OpenAI Compatible", 'openai')
+        self._protocol_combo.addItem("Anthropic Messages", 'anthropic')
+        protocol_index = self._protocol_combo.findData(active_profile.get('protocol', 'openai'))
+        self._protocol_combo.setCurrentIndex(max(0, protocol_index))
+        form.addRow("Protocol:", self._protocol_combo)
 
         # API Key
         self._key_edit = QtWidgets.QLineEdit()
@@ -978,23 +1025,72 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         if not self._profiles:
             return
         idx = max(0, min(self._profile_index, len(self._profiles) - 1))
-        if self._profile_combo.currentIndex() == idx:
-            name = self._profile_combo.currentText().strip()
-        else:
-            name = str(self._profiles[idx].get('name') or self._profile_combo.itemText(idx)).strip()
-        name = name or f'Custom {idx + 1}'
+        name = self._profile_name_edit.text().strip()
+        name = self._unique_profile_name(name, idx)
         self._profiles[idx] = {
             'name': name,
-            'api_url': self._url_edit.text().strip(),
+            'api_url': _clean_custom_api_url(self._url_edit.text()),
             'api_key': self._key_edit.text().strip(),
+            'protocol': self._protocol_combo.currentData() or 'openai',
             'models': self._model_names(),
             'enabled_models': self._enabled_model_names(),
             'context_limit': self._ctx_spin.value(),
             'supports_vision': self._chk_vision.isChecked(),
             'supports_fc': self._chk_fc.isChecked(),
         }
-        if self._profile_combo.itemText(idx) != name:
-            self._profile_combo.setItemText(idx, name)
+        self._set_profile_combo_item_text(idx, name)
+        self._set_profile_name_text(name)
+
+    def _unique_profile_name(self, name: str, index: int) -> str:
+        base = _strip_generated_name_suffix(name) or f'Custom {index + 1}'
+        used = {
+            str(profile.get('name') or '').strip()
+            for i, profile in enumerate(self._profiles)
+            if i != index
+        }
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        return candidate
+
+    def _set_profile_combo_item_text(self, index: int, name: str):
+        """Keep the profile selector item text in sync with the name editor."""
+        if index < 0 or index >= self._profile_combo.count():
+            return
+        if self._profile_combo.itemText(index) == name:
+            return
+        self._profile_combo.blockSignals(True)
+        try:
+            self._profile_combo.setItemText(index, name)
+        finally:
+            self._profile_combo.blockSignals(False)
+
+    def _set_profile_name_text(self, name: str):
+        if self._profile_name_edit.text() == name:
+            return
+        self._profile_name_edit.blockSignals(True)
+        try:
+            self._profile_name_edit.setText(name)
+        finally:
+            self._profile_name_edit.blockSignals(False)
+
+    def _refresh_profile_combo_items(self):
+        """Rebuild combo items from _profiles after normalization/deduplication."""
+        current_index = max(0, min(self._profile_index, len(self._profiles) - 1))
+        self._profile_combo.blockSignals(True)
+        try:
+            self._profile_combo.clear()
+            for idx, profile in enumerate(self._profiles):
+                self._profile_combo.addItem(profile.get('name') or f'Custom {idx + 1}')
+            if self._profiles:
+                self._profile_combo.setCurrentIndex(current_index)
+                self._set_profile_name_text(
+                    self._profiles[current_index].get('name') or f'Custom {current_index + 1}'
+                )
+        finally:
+            self._profile_combo.blockSignals(False)
 
     def _load_profile(self, index: int):
         if index < 0 or index >= len(self._profiles):
@@ -1003,9 +1099,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._loading_profile = True
         try:
             self._profile_combo.setCurrentIndex(index)
-            self._profile_combo.setCurrentText(profile.get('name', f'Custom {index + 1}'))
-            self._url_edit.setText(profile.get('api_url', ''))
+            self._set_profile_name_text(profile.get('name', f'Custom {index + 1}'))
+            self._url_edit.setText(_clean_custom_api_url(profile.get('api_url', '')))
             self._key_edit.setText(profile.get('api_key', ''))
+            protocol_index = self._protocol_combo.findData(profile.get('protocol', 'openai'))
+            self._protocol_combo.setCurrentIndex(max(0, protocol_index))
             self._set_model_names(profile.get('models', []), profile.get('enabled_models', []))
             self._ctx_spin.setValue(profile.get('context_limit', 128000))
             self._chk_vision.setChecked(profile.get('supports_vision', False))
@@ -1019,9 +1117,13 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         idx = self._profile_index
         if idx < 0 or idx >= len(self._profiles):
             return
-        name = (text or '').strip()
-        if name:
-            self._profiles[idx]['name'] = name
+        name = (text or '').strip() or f'Custom {idx + 1}'
+        self._set_profile_combo_item_text(idx, name)
+
+    def _on_profile_name_editing_finished(self):
+        if self._loading_profile or not self._profiles:
+            return
+        self._save_current_profile()
 
     def _on_profile_changed(self, index: int):
         if self._loading_profile or index < 0 or index == self._profile_index:
@@ -1042,6 +1144,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'name': profile_name,
             'api_url': '',
             'api_key': '',
+            'protocol': 'openai',
             'models': [],
             'enabled_models': [],
             'context_limit': 128000,
@@ -1057,8 +1160,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
     def _delete_profile(self):
         if len(self._profiles) <= 1:
+            self._profile_name_edit.setText('Custom 1')
+            self._set_profile_combo_item_text(0, 'Custom 1')
             self._url_edit.clear()
             self._key_edit.clear()
+            self._protocol_combo.setCurrentIndex(0)
             self._set_model_names([])
             self._ctx_spin.setValue(128000)
             self._chk_vision.setChecked(False)
@@ -1116,8 +1222,9 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
     def _fetch_models(self):
         """从 API 获取可用模型列表并填充到模型列表"""
-        url = self._url_edit.text().strip()
+        url = _clean_custom_api_url(self._url_edit.text())
         key = self._key_edit.text().strip()
+        protocol = self._protocol_combo.currentData() or 'openai'
 
         if not url:
             self._test_status.setText(tr("custom.need_url"))
@@ -1130,10 +1237,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         try:
             import requests
-            models_url = normalize_custom_models_url(url)
+            models_url = (
+                normalize_custom_anthropic_models_url(url)
+                if protocol == 'anthropic'
+                else normalize_custom_models_url(url)
+            )
 
             headers = {'Content-Type': 'application/json'}
-            if key:
+            if protocol == 'anthropic':
+                headers['anthropic-version'] = '2023-06-01'
+                if key:
+                    headers['x-api-key'] = key
+            elif key:
                 headers['Authorization'] = f'Bearer {key}'
 
             resp = requests.get(models_url, headers=headers, timeout=15)
@@ -1159,8 +1274,9 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
     def _test_connection(self):
         """测试 Custom API 连接"""
-        url = self._url_edit.text().strip()
+        url = _clean_custom_api_url(self._url_edit.text())
         key = self._key_edit.text().strip()
+        protocol = self._protocol_combo.currentData() or 'openai'
         models = self._test_model_names()
         model = models[0] if models else 'test'
 
@@ -1169,7 +1285,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             self._test_status.setStyleSheet(f"color: #f5a623; font-size: {ThemeEngine.scaled_px(12)}px;")
             return
 
-        test_url = normalize_custom_chat_url(url)
+        test_url = normalize_custom_messages_url(url) if protocol == 'anthropic' else normalize_custom_chat_url(url)
 
         self._btn_test.setEnabled(False)
         self._test_status.setText(tr("custom.connecting"))
@@ -1178,14 +1294,25 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         try:
             import requests
             headers = {'Content-Type': 'application/json'}
-            if key:
+            if protocol == 'anthropic':
+                headers['anthropic-version'] = '2023-06-01'
+                if key:
+                    headers['x-api-key'] = key
+            elif key:
                 headers['Authorization'] = f'Bearer {key}'
-            payload = {
-                'model': model,
-                'messages': [{'role': 'user', 'content': 'Hi'}],
-                'max_tokens': 5,
-                'stream': False,
-            }
+            if protocol == 'anthropic':
+                payload = {
+                    'model': model,
+                    'messages': [{'role': 'user', 'content': 'Hi'}],
+                    'max_tokens': 5,
+                }
+            else:
+                payload = {
+                    'model': model,
+                    'messages': [{'role': 'user', 'content': 'Hi'}],
+                    'max_tokens': 5,
+                    'stream': False,
+                }
             resp = requests.post(test_url, json=payload, headers=headers, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
@@ -1210,6 +1337,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             if p.get('api_url') or p.get('models')
         ])
         self._profiles = profiles
+        self._refresh_profile_combo_items()
         if not profiles or any(not p.get('api_url') for p in profiles):
             QtWidgets.QMessageBox.warning(self, tr("dialog.notice"), tr("custom.need_url_plain"))
             return
@@ -1226,12 +1354,14 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             if p.get('api_url') or p.get('models')
         ])
         self._profiles = profiles
+        self._refresh_profile_combo_items()
         primary = profiles[0] if profiles else {}
         models = _flatten_custom_models(profiles)
         return {
             'name': primary.get('name', 'Custom 1'),
             'api_url': primary.get('api_url', ''),
             'api_key': primary.get('api_key', ''),
+            'protocol': primary.get('protocol', 'openai'),
             'models': models,
             'context_limit': primary.get('context_limit', 128000),
             'supports_vision': primary.get('supports_vision', False),

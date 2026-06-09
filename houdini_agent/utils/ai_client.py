@@ -49,6 +49,26 @@ def normalize_custom_chat_url(api_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def normalize_custom_messages_url(api_url: str) -> str:
+    """Accept either an Anthropic base URL or a full Messages endpoint."""
+    raw = (api_url or '').strip()
+    if not raw:
+        return ''
+
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return raw.rstrip('/')
+
+    path = parts.path.rstrip('/')
+    lower_path = path.lower()
+    if lower_path.endswith('/chat/completions'):
+        path = path[:-len('/chat/completions')]
+    if not path.lower().endswith('/messages'):
+        path = f"{path}/messages" if path else '/messages'
+
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 def normalize_custom_models_url(api_url: str) -> str:
     """Return the OpenAI-compatible models endpoint for a custom provider URL."""
     chat_url = normalize_custom_chat_url(api_url)
@@ -65,6 +85,26 @@ def normalize_custom_models_url(api_url: str) -> str:
     path = parts.path.rstrip('/')
     if path.lower().endswith('/chat/completions'):
         path = path[:-len('/chat/completions')]
+    path = f"{path}/models" if path else '/models'
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def normalize_custom_anthropic_models_url(api_url: str) -> str:
+    """Return the Anthropic-compatible models endpoint for a custom provider URL."""
+    messages_url = normalize_custom_messages_url(api_url)
+    if not messages_url:
+        return ''
+
+    parts = urlsplit(messages_url)
+    if not parts.scheme or not parts.netloc:
+        raw = messages_url.rstrip('/')
+        if raw.lower().endswith('/messages'):
+            raw = raw[:-len('/messages')]
+        return f"{raw}/models" if raw else 'models'
+
+    path = parts.path.rstrip('/')
+    if path.lower().endswith('/messages'):
+        path = path[:-len('/messages')]
     path = f"{path}/models" if path else '/models'
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
@@ -2402,12 +2442,20 @@ class AIClient:
         return {
             'api_url': self._CUSTOM_API_URL,
             'api_key': self._api_keys.get('custom') or '',
+            'protocol': 'openai',
             'supports_fc': self._CUSTOM_SUPPORTS_FC,
             'models': [],
         }
 
     def _get_custom_model_name(self, model: str = '') -> str:
         return self._CUSTOM_MODEL_NAMES.get(model, model)
+
+    def _get_custom_protocol(self, model: str = '') -> str:
+        profile = self._get_custom_profile(model)
+        protocol = str(profile.get('protocol') or 'openai').strip().lower()
+        if protocol in ('anthropic', 'messages', 'anthropic_messages'):
+            return 'anthropic'
+        return 'openai'
 
     def _get_api_key(self, provider: str, model: str = '') -> Optional[str]:
         provider = (provider or 'openai').lower()
@@ -2461,7 +2509,12 @@ class AIClient:
 
     def _is_anthropic_protocol(self, provider: str, model: str) -> bool:
         """判断是否应使用 Anthropic Messages 协议（而非 OpenAI 协议）"""
-        return provider == 'duojie' and model.lower() in self._DUOJIE_ANTHROPIC_MODELS
+        provider = (provider or '').lower()
+        if provider == 'duojie':
+            return model.lower() in self._DUOJIE_ANTHROPIC_MODELS
+        if provider == 'custom':
+            return self._get_custom_protocol(model) == 'anthropic'
+        return False
 
     def _get_api_url(self, provider: str, model: str = '') -> str:
         provider = (provider or 'openai').lower()
@@ -2480,6 +2533,8 @@ class AIClient:
         elif provider == 'custom':
             profile = self._get_custom_profile(model)
             raw = profile.get('api_url') or self._CUSTOM_API_URL or self.OPENAI_API_URL
+            if self._get_custom_protocol(model) == 'anthropic':
+                return normalize_custom_messages_url(raw)
             return normalize_custom_chat_url(raw)
         return self.OPENAI_API_URL
 
@@ -2521,10 +2576,17 @@ class AIClient:
                 context_limit = int(profile.get('context_limit') or 128000)
             except (TypeError, ValueError):
                 context_limit = 128000
+            protocol = str(profile.get('protocol') or 'openai').strip().lower()
+            if protocol not in ('anthropic', 'messages', 'anthropic_messages'):
+                protocol = 'openai'
+            else:
+                protocol = 'anthropic'
+            raw_api_url = profile.get('api_url', '')
             normalized_profiles.append({
                 'name': str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}',
-                'api_url': normalize_custom_chat_url(profile.get('api_url', '')),
+                'api_url': normalize_custom_messages_url(raw_api_url) if protocol == 'anthropic' else normalize_custom_chat_url(raw_api_url),
                 'api_key': str(profile.get('api_key') or '').strip(),
+                'protocol': protocol,
                 'models': models,
                 'enabled_models': enabled_models,
                 'context_limit': context_limit,
@@ -2536,6 +2598,7 @@ class AIClient:
                 'name': 'Custom 1',
                 'api_url': normalize_custom_chat_url(api_url),
                 'api_key': (api_key or '').strip(),
+                'protocol': 'openai',
                 'models': [],
                 'enabled_models': [],
                 'context_limit': 128000,
@@ -2968,12 +3031,13 @@ class AIClient:
         解析 Anthropic SSE 事件流，yield 与 OpenAI 分支相同的内部 chunk 格式。
         """
         api_url = self._get_api_url(provider, model)
+        request_model = self._get_custom_model_name(model) if (provider or '').lower() == 'custom' else model
         
         # 消息转换
         system_text, anth_messages = self._convert_messages_to_anthropic(messages)
         
         payload: Dict[str, Any] = {
-            'model': model,
+            'model': request_model,
             'messages': anth_messages,
             'max_tokens': max_tokens or 16384,
             'stream': True,
@@ -3007,7 +3071,7 @@ class AIClient:
             'anthropic-version': '2023-06-01',
         }
         
-        print(f"[AI Client] Anthropic protocol: {api_url} model={model}")
+        print(f"[AI Client] Anthropic protocol: {api_url} model={request_model}")
         
         for attempt in range(self._max_retries):
             try:
@@ -3259,10 +3323,11 @@ class AIClient:
                         timeout: int = 60) -> Dict[str, Any]:
         """Anthropic Messages 协议的非流式 Chat。"""
         api_url = self._get_api_url(provider, model)
+        request_model = self._get_custom_model_name(model) if (provider or '').lower() == 'custom' else model
         system_text, anth_messages = self._convert_messages_to_anthropic(messages)
         
         payload: Dict[str, Any] = {
-            'model': model,
+            'model': request_model,
             'messages': anth_messages,
             'max_tokens': max_tokens,
         }

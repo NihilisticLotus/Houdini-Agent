@@ -86,6 +86,10 @@ class SessionManagerMixin:
         chat_layout.setContentsMargins(4, 8, 4, 8)
         chat_layout.setSpacing(0)
         chat_layout.setSizeConstraint(QtWidgets.QLayout.SetMinAndMaxSize)
+        # QScrollArea keeps chat_container at least as tall as the viewport.
+        # Top-align the flow so spare height remains blank instead of being
+        # distributed into short message widgets.
+        chat_layout.setAlignment(QtCore.Qt.AlignTop)
 
         # Keep a stable insertion anchor without adding an expanding stretch.
         # The old stretch consumed all spare height, which made short sessions
