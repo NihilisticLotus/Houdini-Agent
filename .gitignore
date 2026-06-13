@@ -33,3 +33,6 @@ HOUDINI_HIP_MANAGER/
 # OS
 Thumbs.db
 .DS_Store
+
+# Local workspace marker (not for git)
+.workspace

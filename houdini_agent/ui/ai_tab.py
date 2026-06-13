@@ -265,8 +265,11 @@ class AITab(
         self._streaming_last_code = ""          # 上次解析出的完整代码（用于增量 diff）
         
         # 构建并缓存系统提示词（两个版本：有思考 / 无思考）
-        self._system_prompt_think = self._build_system_prompt(with_thinking=True)
-        self._system_prompt_no_think = self._build_system_prompt(with_thinking=False)
+        # ★ 启动优化：先用不含 DocIndex 的轻量 prompt（跳过 JSON 加载），
+        #   DocIndex 在后台加载完成后自动触发 _rebuild_system_prompts() 补全。
+        self._doc_index_ready = False
+        self._system_prompt_think = self._build_system_prompt(with_thinking=True, skip_doc_index=True)
+        self._system_prompt_no_think = self._build_system_prompt(with_thinking=False, skip_doc_index=True)
         self._cached_prompt_think = self.token_optimizer.optimize_system_prompt(
             self._system_prompt_think, max_length=1800
         )
@@ -276,11 +279,13 @@ class AITab(
         # 兼容旧引用
         self._system_prompt = self._system_prompt_think
         self._cached_optimized_system_prompt = self._cached_prompt_think
+        # 后台加载 DocIndex，完成后重建完整 prompt
+        QtCore.QTimer.singleShot(0, self._warm_doc_index)
         print("[AITab] init: _build_ui begin")
         self._build_ui()
         print("[AITab] init: _build_ui done")
         self._wire_events()
-        self._load_model_preference(restore_provider=True)  # 恢复上次使用的提供商和模型
+        self._load_model_preference(restore_provider=True)
         self._update_key_status()
         self._update_context_stats()
 
@@ -684,7 +689,21 @@ class AITab(
         except Exception:
             return ""
 
-    def _build_system_prompt(self, with_thinking: bool = True) -> str:
+    def _warm_doc_index(self):
+        """后台加载 DocIndex 并重建完整系统提示词"""
+        import threading
+        def _load():
+            try:
+                from ..utils.doc_rag import get_doc_index
+                get_doc_index()  # 触发单例加载（含 JSON 反序列化）
+                self._doc_index_ready = True
+                # 回主线程重建 prompt
+                QtCore.QTimer.singleShot(0, self._rebuild_system_prompts)
+            except Exception as e:
+                print(f"[DocIndex] 后台加载失败: {e}")
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _build_system_prompt(self, with_thinking: bool = True, skip_doc_index: bool = False) -> str:
         """构建系统提示
         
         Args:
@@ -907,6 +926,8 @@ NetworkBox Hierarchical Navigation (large network query strategy, MUST follow):
 
         # Inject Labs node catalog (so AI knows Labs tools exist)
         try:
+            if skip_doc_index:
+                raise RuntimeError("skip")
             from ..utils.doc_rag import get_doc_index
             labs_catalog = get_doc_index().get_labs_catalog()
             if labs_catalog:
@@ -1279,19 +1300,33 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
     def _refresh_models(self, provider: str):
         self.model_combo.clear()
-        
+
         if provider == 'ollama':
-            # 尝试动态获取 Ollama 模型列表
-            try:
-                models = self.client.get_ollama_models()
-                if models:
-                    self.model_combo.addItems(models)
-                    return
-            except Exception:
-                pass
-        
+            # 后台拉取 Ollama 模型列表，避免主线程阻塞
+            import threading
+            self.model_combo.addItem("检测中...")
+            self.model_combo.setEnabled(False)
+            def _fetch():
+                try:
+                    models = self.client.get_ollama_models()
+                except Exception:
+                    models = []
+                QtCore.QTimer.singleShot(0, lambda: self._on_ollama_models_ready(models))
+            threading.Thread(target=_fetch, daemon=True).start()
+            return
+
         # 使用预设的模型列表
         self.model_combo.addItems(self._model_map.get(provider, []))
+
+    def _on_ollama_models_ready(self, models: list):
+        """Ollama 模型列表后台加载完成回调（主线程）"""
+        self.model_combo.setEnabled(True)
+        self.model_combo.clear()
+        if models:
+            self.model_combo.addItems(models)
+        else:
+            self.model_combo.addItems(self._model_map.get('ollama', []))
+        self._load_model_preference()
 
     def _update_key_status(self):
         provider = self._current_provider()

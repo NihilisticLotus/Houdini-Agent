@@ -3,13 +3,19 @@ import sys
 import hou
 from houdini_agent.qt_compat import QtWidgets
 
+# 模块源文件 mtime 缓存：{mod_name: mtime}，跨 show_tool() 调用持久化
+_module_mtimes: dict = {}
+
 # 强制重新加载模块，避免缓存问题
 def _reload_modules():
+    import importlib
+    import inspect
+
     # ---- 清理旧包名残留（HOUDINI_HIP_MANAGER → houdini_agent 迁移） ----
     old_mods = [k for k in sys.modules if k.startswith('HOUDINI_HIP_MANAGER')]
     for k in old_mods:
         del sys.modules[k]
-    
+
     modules_to_reload = [
         'houdini_agent.qt_compat',  # ★ Qt 兼容层最先重载
         'houdini_agent.utils.token_optimizer',
@@ -34,15 +40,38 @@ def _reload_modules():
         'houdini_agent.ui.ai_tab',
         'houdini_agent.core.main_window',
     ]
-    for mod_name in modules_to_reload:
-        if mod_name in sys.modules:
+    # 第一次打开：模块刚被 import 进来，代码必然是最新的，无需 reload。
+    # 只记录 mtime 基准，供后续调用做变动检测。
+    if not _module_mtimes:
+        for mod_name in modules_to_reload:
+            if mod_name not in sys.modules:
+                continue
             try:
-                import importlib
-                # 逐模块日志：若 reload 卡死，最后一条 "reload: X" 就是阻塞模块
-                print(f"[Houdini Agent] Startup: reload: {mod_name}")
-                importlib.reload(sys.modules[mod_name])
-            except Exception:
+                _module_mtimes[mod_name] = os.path.getmtime(
+                    inspect.getfile(sys.modules[mod_name])
+                )
+            except (TypeError, OSError):
                 pass
+        print("[Houdini Agent] Startup: reload_modules skipped (fresh imports)")
+        return
+
+    # 后续打开：只 reload 源文件有变动的模块（开发热更新 / 插件升级场景）
+    for mod_name in modules_to_reload:
+        if mod_name not in sys.modules:
+            continue
+        try:
+            src_file = inspect.getfile(sys.modules[mod_name])
+            mtime = os.path.getmtime(src_file)
+            if _module_mtimes.get(mod_name) == mtime:
+                continue  # 未变动，跳过
+            _module_mtimes[mod_name] = mtime
+        except (TypeError, OSError):
+            pass  # 取不到 mtime 时保底 reload
+        try:
+            print(f"[Houdini Agent] Startup: reload: {mod_name}")
+            importlib.reload(sys.modules[mod_name])
+        except Exception:
+            pass
 
 from houdini_agent.core.main_window import MainWindow
 
