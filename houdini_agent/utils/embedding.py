@@ -58,21 +58,24 @@ class LocalEmbedder:
 
     def _try_load_model(self):
         """尝试加载 sentence-transformers 模型"""
-        # 1. sentence-transformers
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(
-                self.model_name,
-                cache_folder=str(self.cache_dir),
-            )
-            self._backend = "sentence-transformers"
-            self.dim = self._model.get_sentence_embedding_dimension()
-            print(f"[Embedding] 加载成功: {self.model_name} (dim={self.dim}, backend=sentence-transformers)")
-            return
-        except ImportError:
-            print("[Embedding] sentence-transformers 未安装")
-        except Exception as e:
-            print(f"[Embedding] sentence-transformers 加载失败: {e}")
+        # 0. 快速检查：未安装时直接跳过，避免触发任何 DLL 加载
+        import importlib.util
+        if importlib.util.find_spec("sentence_transformers") is None:
+            print("[Embedding] sentence-transformers 未安装，跳过加载")
+        else:
+            # 1. sentence-transformers（已确认安装，再 import）
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._model = SentenceTransformer(
+                    self.model_name,
+                    cache_folder=str(self.cache_dir),
+                )
+                self._backend = "sentence-transformers"
+                self.dim = self._model.get_sentence_embedding_dimension()
+                print(f"[Embedding] 加载成功: {self.model_name} (dim={self.dim}, backend=sentence-transformers)")
+                return
+            except Exception as e:
+                print(f"[Embedding] sentence-transformers 加载失败: {e}")
 
         # 2. Fallback: 基于字符 n-gram 的伪向量
         self._backend = "fallback"

@@ -192,7 +192,7 @@ class AITab(
         self._sleep_msg_counter = 0       # 当前 session 累计用户消息数
         self._sleep_in_progress = False   # 防止并发睡眠
 
-        self._init_memory_system()
+        QtCore.QTimer.singleShot(2000, self._init_memory_system)
         
         # 思考长度限制（已禁用，允许完整思考）
         self._max_thinking_length = float('inf')  # 不限制思考长度
