@@ -98,6 +98,7 @@ class HeaderMixin:
             'context_limit': 128000,
             'supports_vision': False,
             'supports_fc': True,    # 是否支持 Function Calling
+            'anthropic_protocol': False,  # True → Anthropic Messages 格式；False → OpenAI Chat Completions 格式
         }
         self._load_custom_provider_config()
         self._model_context_limits = {
@@ -389,6 +390,7 @@ class HeaderMixin:
                     pass
                 self._custom_provider_config['supports_vision'] = cfg.get('custom_supports_vision', 'false').lower() == 'true'
                 self._custom_provider_config['supports_fc'] = cfg.get('custom_supports_fc', 'true').lower() != 'false'
+                self._custom_provider_config['anthropic_protocol'] = cfg.get('custom_anthropic_protocol', 'false').lower() == 'true'
                 # 更新模型列表
                 self._model_map['custom'] = self._custom_provider_config['models']
                 # 同步到 AIClient（如果已初始化）
@@ -409,6 +411,7 @@ class HeaderMixin:
             cfg['custom_context_limit'] = str(cc['context_limit'])
             cfg['custom_supports_vision'] = 'true' if cc['supports_vision'] else 'false'
             cfg['custom_supports_fc'] = 'true' if cc['supports_fc'] else 'false'
+            cfg['custom_anthropic_protocol'] = 'true' if cc.get('anthropic_protocol') else 'false'
             save_config('ai', cfg, dcc_type='houdini')
         except Exception as e:
             print(f"[Header] 保存 Custom 配置失败: {e}")
@@ -425,6 +428,7 @@ class HeaderMixin:
                     api_url=cc['api_url'],
                     api_key=cc['api_key'],
                     supports_fc=cc['supports_fc'],
+                    anthropic_protocol=cc.get('anthropic_protocol', False),
                 )
             if cc['api_key']:
                 client._api_keys['custom'] = cc['api_key']
@@ -557,6 +561,19 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._ctx_spin.setSuffix(" tokens")
         self._ctx_spin.setMinimumHeight(28)
         form.addRow("上下文长度:", self._ctx_spin)
+
+        # 协议选择
+        protocol_row = QtWidgets.QHBoxLayout()
+        protocol_row.setSpacing(12)
+        self._chk_anthropic = QtWidgets.QCheckBox("Anthropic Messages 协议")
+        self._chk_anthropic.setChecked(cfg.get('anthropic_protocol', False))
+        self._chk_anthropic.setToolTip(
+            "勾选后使用 Anthropic /v1/messages 格式（适用于 Claude 兼容中转）；\n"
+            "不勾选则使用 OpenAI /v1/chat/completions 格式（适用于 LM Studio、vLLM 等）。"
+        )
+        protocol_row.addWidget(self._chk_anthropic)
+        protocol_row.addStretch()
+        form.addRow("协议:", protocol_row)
 
         # 特性开关
         features_row = QtWidgets.QHBoxLayout()
@@ -771,4 +788,5 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'context_limit': self._ctx_spin.value(),
             'supports_vision': self._chk_vision.isChecked(),
             'supports_fc': self._chk_fc.isChecked(),
+            'anthropic_protocol': self._chk_anthropic.isChecked(),
         }

@@ -1393,6 +1393,7 @@ class AIClient:
     # Custom provider 运行时配置
     _CUSTOM_API_URL: str = ''
     _CUSTOM_SUPPORTS_FC: bool = True
+    _CUSTOM_ANTHROPIC_PROTOCOL: bool = False
 
     def __init__(self, api_key: Optional[str] = None):
         self._api_keys: Dict[str, Optional[str]] = {
@@ -2364,7 +2365,25 @@ class AIClient:
 
     def _is_anthropic_protocol(self, provider: str, model: str) -> bool:
         """判断是否应使用 Anthropic Messages 协议（而非 OpenAI 协议）"""
+        if provider == 'custom':
+            return bool(self._CUSTOM_ANTHROPIC_PROTOCOL)
         return provider == 'duojie' and model.lower() in self._DUOJIE_ANTHROPIC_MODELS
+
+    @staticmethod
+    def _build_image_block(img_b64: str, img_mt: str, use_anthropic: bool) -> dict:
+        """根据协议返回正确格式的图片内容块。"""
+        if use_anthropic:
+            # Anthropic Messages: {"type":"image","source":{"type":"base64",...}}
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img_mt,
+                    "data": img_b64,
+                }
+            }
+        # OpenAI Vision: {"type":"image_url","image_url":{"url":"data:..."}}
+        return {"type": "image_url", "image_url": {"url": f"data:{img_mt};base64,{img_b64}"}}
 
     def _normalize_chat_url(self, url: str) -> str:
         """将基础 URL 规范化为 chat completions 端点
@@ -2409,16 +2428,19 @@ class AIClient:
         }
         return names.get(provider, provider)
 
-    def set_custom_provider(self, api_url: str, api_key: str = '', supports_fc: bool = True):
+    def set_custom_provider(self, api_url: str, api_key: str = '', supports_fc: bool = True,
+                            anthropic_protocol: bool = False):
         """设置 Custom Provider 的运行时配置
 
         Args:
-            api_url: OpenAI 兼容的 API 端点 URL
+            api_url: API 端点 URL（OpenAI 兼容或 Anthropic Messages）
             api_key: API Key（可为空）
             supports_fc: 是否支持原生 Function Calling
+            anthropic_protocol: True 则使用 Anthropic Messages 格式，False 使用 OpenAI Chat Completions 格式
         """
         self._CUSTOM_API_URL = api_url.strip()
         self._CUSTOM_SUPPORTS_FC = supports_fc
+        self._CUSTOM_ANTHROPIC_PROTOCOL = bool(anthropic_protocol)
         if api_key:
             self._api_keys['custom'] = api_key.strip()
     
@@ -4043,6 +4065,17 @@ class AIClient:
                             
                         else:
                             # ---- 4xx 格式问题 → 移除末尾可能有问题的消息 ----
+                            # 先剥离尾部注入的多模态 user 消息（capture_viewport 回注的图片块）
+                            # 这类消息不在 tool/assistant 清理范围内，但格式错误会导致连续 400
+                            while (working_messages and cleanup_count < 5 and
+                                   working_messages[-1].get('role') == 'user' and
+                                   working_messages[-1] is not messages[0] and
+                                   isinstance(working_messages[-1].get('content'), list) and
+                                   any(p.get('type') in ('image_url', 'image')
+                                       for p in working_messages[-1]['content']
+                                       if isinstance(p, dict))):
+                                working_messages.pop()
+                                cleanup_count += 1
                             while (working_messages and cleanup_count < 20 and
                                    working_messages[-1].get('role') in ('tool', 'system')
                                    and working_messages[-1] is not messages[0]):
@@ -4450,14 +4483,15 @@ class AIClient:
                 if supports_vision and result.get('_viewport_image'):
                     _img_b64 = result['_viewport_image']
                     _img_mt = result.get('_image_media_type', 'image/jpeg')
+                    _use_anth = self._is_anthropic_protocol(provider, model)
                     working_messages.append({
                         'role': 'user',
                         'content': [
                             {"type": "text", "text": "[viewport snapshot attached — please analyze the current viewport state, check for visual issues or confirm the result is correct]"},
-                            {"type": "image_url", "image_url": {"url": f"data:{_img_mt};base64,{_img_b64}"}}
+                            self._build_image_block(_img_b64, _img_mt, _use_anth)
                         ]
                     })
-                    print(f"[AI Client] 📸 视口截图已注入消息 ({len(_img_b64)//1024}KB base64)")
+                    print(f"[AI Client] 📸 视口截图已注入消息 ({len(_img_b64)//1024}KB, {'anthropic' if _use_anth else 'openai'} format)")
 
             if should_break_tool_limit:
                 return {
@@ -5232,10 +5266,11 @@ class AIClient:
             
             if _viewport_imgs:
                 # 多模态消息：文本 + 图片
+                _use_anth = self._is_anthropic_protocol(provider, model)
                 _content_parts = [{"type": "text", "text": f"[TOOL_RESULT]\n{prompt}\n[viewport snapshot attached — please analyze the current viewport state]"}]
                 for _vimg_b64, _vimg_mt in _viewport_imgs:
-                    _content_parts.append({"type": "image_url", "image_url": {"url": f"data:{_vimg_mt};base64,{_vimg_b64}"}})
-                    print(f"[AI Client] 📸 视口截图已注入消息 (JSON mode, {len(_vimg_b64)//1024}KB)")
+                    _content_parts.append(self._build_image_block(_vimg_b64, _vimg_mt, _use_anth))
+                    print(f"[AI Client] 📸 视口截图已注入消息 (JSON mode, {len(_vimg_b64)//1024}KB, {'anthropic' if _use_anth else 'openai'} format)")
                 working_messages.append({'role': 'user', 'content': _content_parts})
             else:
                 working_messages.append({
