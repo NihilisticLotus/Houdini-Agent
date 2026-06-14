@@ -814,6 +814,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
 
         profile_row = QtWidgets.QHBoxLayout()
         profile_row.setSpacing(4)
@@ -894,18 +895,22 @@ class _CustomProviderDialog(QtWidgets.QDialog):
 
         # 模型列表：勾选项会显示在主界面；全不勾选表示全部显示。
         self._models_list = QtWidgets.QListWidget()
-        self._models_list.setMinimumHeight(96)
+        self._models_list.setMinimumHeight(120)
         self._models_list.setToolTip("勾选后仅在主界面显示勾选模型；全不勾选则显示全部模型")
         self._models_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._models_list.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )
         self._set_model_names(
             active_profile.get('models', []),
             active_profile.get('enabled_models', []),
         )
 
-        models_row = QtWidgets.QHBoxLayout()
+        models_row_widget = QtWidgets.QWidget()
+        models_row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        models_row = QtWidgets.QHBoxLayout(models_row_widget)
         models_row.setSpacing(4)
         models_row.addWidget(self._models_list, 1)
 
@@ -916,8 +921,9 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._btn_fetch_models.setToolTip(tr("custom.fetch_models"))
         self._btn_fetch_models.clicked.connect(self._fetch_models)
         models_row.addWidget(self._btn_fetch_models)
+        models_row.setAlignment(self._btn_fetch_models, QtCore.Qt.AlignTop)
 
-        form.addRow(tr("custom.models"), models_row)
+        form.addRow(tr("custom.models"), models_row_widget)
 
         # 上下文长度
         self._ctx_spin = QtWidgets.QSpinBox()
@@ -940,7 +946,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         features_row.addStretch()
         form.addRow(tr("custom.features"), features_row)
 
-        layout.addLayout(form)
+        layout.addLayout(form, 1)
 
         # 测试连接按钮
         test_row = QtWidgets.QHBoxLayout()
