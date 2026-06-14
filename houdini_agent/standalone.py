@@ -5,15 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-
-def _configure_utf8_stdio():
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if hasattr(stream, "reconfigure"):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+from houdini_agent import configure_text_output
 
 
 def _apply_standalone_dark_palette(QtWidgets, QtGui):
@@ -43,7 +35,7 @@ def _apply_standalone_dark_palette(QtWidgets, QtGui):
 
 
 def main(argv=None) -> int:
-    _configure_utf8_stdio()
+    configure_text_output()
     parser = argparse.ArgumentParser(description="Launch Houdini Agent standalone UI")
     parser.add_argument("--bridge-url", required=True, help="Local Houdini bridge URL")
     args = parser.parse_args(argv)

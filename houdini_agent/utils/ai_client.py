@@ -13,15 +13,10 @@ import re
 from typing import List, Dict, Optional, Any, Callable, Generator, Tuple
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
+from houdini_agent import configure_text_output
 from shared.common_utils import load_config, save_config
 
-for _stream_name in ("stdout", "stderr"):
-    _stream = getattr(sys, _stream_name, None)
-    if hasattr(_stream, "reconfigure"):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+configure_text_output()
 
 # 强制使用本地 lib 目录中的依赖库
 _lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'lib')
@@ -40,6 +35,27 @@ except ImportError:
     pass
 
 
+_CUSTOM_PROVIDER_ENDPOINTS = (
+    '/chat/completions',
+    '/messages',
+    '/models',
+)
+
+
+def _custom_provider_base_path(path: str) -> str:
+    base = (path or '').rstrip('/')
+    lower_base = base.lower()
+    for endpoint in _CUSTOM_PROVIDER_ENDPOINTS:
+        if lower_base.endswith(endpoint):
+            return base[:-len(endpoint)].rstrip('/')
+    return base
+
+
+def _join_endpoint(base_path: str, endpoint: str) -> str:
+    base = _custom_provider_base_path(base_path)
+    return f"{base}{endpoint}" if base else endpoint
+
+
 def normalize_custom_chat_url(api_url: str) -> str:
     """Accept either an OpenAI-compatible base URL or a full chat endpoint."""
     raw = (api_url or '').strip()
@@ -50,9 +66,7 @@ def normalize_custom_chat_url(api_url: str) -> str:
     if not parts.scheme or not parts.netloc:
         return raw.rstrip('/')
 
-    path = parts.path.rstrip('/')
-    if not path.lower().endswith('/chat/completions'):
-        path = f"{path}/chat/completions" if path else '/chat/completions'
+    path = _join_endpoint(parts.path, '/chat/completions')
 
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
@@ -67,53 +81,38 @@ def normalize_custom_messages_url(api_url: str) -> str:
     if not parts.scheme or not parts.netloc:
         return raw.rstrip('/')
 
-    path = parts.path.rstrip('/')
-    lower_path = path.lower()
-    if lower_path.endswith('/chat/completions'):
-        path = path[:-len('/chat/completions')]
-    if not path.lower().endswith('/messages'):
-        path = f"{path}/messages" if path else '/messages'
+    path = _join_endpoint(parts.path, '/messages')
 
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def normalize_custom_models_url(api_url: str) -> str:
     """Return the OpenAI-compatible models endpoint for a custom provider URL."""
-    chat_url = normalize_custom_chat_url(api_url)
-    if not chat_url:
+    raw = (api_url or '').strip()
+    if not raw:
         return ''
 
-    parts = urlsplit(chat_url)
+    parts = urlsplit(raw)
     if not parts.scheme or not parts.netloc:
-        raw = chat_url.rstrip('/')
-        if raw.lower().endswith('/chat/completions'):
-            raw = raw[:-len('/chat/completions')]
-        return f"{raw}/models" if raw else 'models'
+        base = _custom_provider_base_path(raw)
+        return f"{base}/models" if base else 'models'
 
-    path = parts.path.rstrip('/')
-    if path.lower().endswith('/chat/completions'):
-        path = path[:-len('/chat/completions')]
-    path = f"{path}/models" if path else '/models'
+    path = _join_endpoint(parts.path, '/models')
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def normalize_custom_anthropic_models_url(api_url: str) -> str:
     """Return the Anthropic-compatible models endpoint for a custom provider URL."""
-    messages_url = normalize_custom_messages_url(api_url)
-    if not messages_url:
+    raw = (api_url or '').strip()
+    if not raw:
         return ''
 
-    parts = urlsplit(messages_url)
+    parts = urlsplit(raw)
     if not parts.scheme or not parts.netloc:
-        raw = messages_url.rstrip('/')
-        if raw.lower().endswith('/messages'):
-            raw = raw[:-len('/messages')]
-        return f"{raw}/models" if raw else 'models'
+        base = _custom_provider_base_path(raw)
+        return f"{base}/models" if base else 'models'
 
-    path = parts.path.rstrip('/')
-    if path.lower().endswith('/messages'):
-        path = path[:-len('/messages')]
-    path = f"{path}/models" if path else '/models'
+    path = _join_endpoint(parts.path, '/models')
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 

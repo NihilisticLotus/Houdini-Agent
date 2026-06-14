@@ -196,6 +196,7 @@ def _launch_standalone_ui(bridge_url: str):
             cmd = list(cmd_prefix) + ["-m", "houdini_agent.standalone", "--bridge-url", bridge_url]
             print(f"[Houdini Agent] Startup: launching standalone UI: {cmd}")
             log_path = log_dir / f"standalone_{int(time.time())}.log"
+            log_file = None
             try:
                 log_file = open(log_path, "w", encoding="utf-8", errors="replace")
                 log_file.write(f"Command: {cmd}\n\n")
@@ -210,14 +211,22 @@ def _launch_standalone_ui(bridge_url: str):
                 )
             except Exception as e:
                 last_error = e
+                try:
+                    if log_file is not None:
+                        log_file.close()
+                except Exception:
+                    pass
                 continue
+            try:
+                log_file.close()
+            except Exception:
+                pass
             time.sleep(1.5)
             if proc.poll() is None:
                 print(f"[Houdini Agent] Startup: standalone UI log: {log_path}")
                 return proc
             print(f"[Houdini Agent] Startup: standalone UI exited early: {proc.returncode}")
             try:
-                log_file.close()
                 if log_path.exists():
                     text = log_path.read_text(encoding="utf-8", errors="replace")
                     if text.strip():
