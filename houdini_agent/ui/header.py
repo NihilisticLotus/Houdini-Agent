@@ -33,6 +33,55 @@ def _split_custom_models(models_text: str) -> list:
     return models
 
 
+def _normalize_custom_model_list(values) -> list:
+    if isinstance(values, str):
+        values = _split_custom_models(values)
+    elif values is None:
+        values = []
+    else:
+        values = [str(value).strip() for value in values if str(value).strip()]
+
+    unique = []
+    seen = set()
+    for name in values:
+        if name and name not in seen:
+            unique.append(name)
+            seen.add(name)
+    return unique
+
+
+def _normalize_custom_model_state(profile: dict) -> dict:
+    models = _normalize_custom_model_list(profile.get('models'))
+    manual_models = _normalize_custom_model_list(profile.get('manual_models'))
+    fetched_models = _normalize_custom_model_list(profile.get('fetched_models'))
+    hidden_models = _normalize_custom_model_list(profile.get('hidden_models'))
+
+    if not manual_models and not fetched_models and models:
+        manual_models = list(models)
+
+    hidden_set = set(hidden_models)
+    manual_models = [name for name in manual_models if name not in hidden_set]
+    fetched_models = [name for name in fetched_models if name not in hidden_set]
+
+    merged = []
+    seen = set()
+    for name in manual_models + fetched_models + models:
+        if name and name not in hidden_set and name not in seen:
+            merged.append(name)
+            seen.add(name)
+
+    enabled_models = _normalize_custom_model_list(profile.get('enabled_models'))
+    enabled_models = [name for name in enabled_models if name in merged]
+
+    return {
+        'models': merged,
+        'manual_models': manual_models,
+        'fetched_models': fetched_models,
+        'hidden_models': [name for name in hidden_models if name not in manual_models and name not in fetched_models],
+        'enabled_models': enabled_models,
+    }
+
+
 def _clean_custom_api_url(api_url: str) -> str:
     """Keep URL values single-line so the line-based ini parser stays valid."""
     return ''.join(str(api_url or '').split())
@@ -54,17 +103,7 @@ def _normalize_custom_profiles(profiles: list) -> list:
         if not isinstance(profile, dict):
             continue
         name = str(profile.get('name') or f'Custom {idx}').strip() or f'Custom {idx}'
-        models = profile.get('models') or []
-        if isinstance(models, str):
-            models = _split_custom_models(models)
-        else:
-            models = [str(m).strip() for m in models if str(m).strip()]
-        enabled_models = profile.get('enabled_models') or []
-        if isinstance(enabled_models, str):
-            enabled_models = _split_custom_models(enabled_models)
-        else:
-            enabled_models = [str(m).strip() for m in enabled_models if str(m).strip()]
-        enabled_models = [m for m in enabled_models if m in models]
+        state = _normalize_custom_model_state(profile)
         try:
             context_limit = int(profile.get('context_limit') or 128000)
         except (TypeError, ValueError):
@@ -79,8 +118,11 @@ def _normalize_custom_profiles(profiles: list) -> list:
             'api_url': _clean_custom_api_url(profile.get('api_url')),
             'api_key': str(profile.get('api_key') or '').strip(),
             'protocol': protocol,
-            'models': models,
-            'enabled_models': enabled_models,
+            'models': state['models'],
+            'manual_models': state['manual_models'],
+            'fetched_models': state['fetched_models'],
+            'hidden_models': state['hidden_models'],
+            'enabled_models': state['enabled_models'],
             'context_limit': context_limit,
             'supports_vision': bool(profile.get('supports_vision', False)),
             'supports_fc': bool(profile.get('supports_fc', True)),
@@ -258,6 +300,9 @@ class HeaderMixin:
             'api_key': '',
             'protocol': 'openai',
             'models': [],           # 用户配置的模型名列表
+            'manual_models': [],
+            'fetched_models': [],
+            'hidden_models': [],
             'context_limit': 128000,
             'supports_vision': False,
             'supports_fc': True,    # 是否支持 Function Calling
@@ -669,6 +714,9 @@ class HeaderMixin:
                     'api_key': cfg.get('custom_api_key', ''),
                     'protocol': cfg.get('custom_protocol', 'openai'),
                     'models': legacy_models,
+                    'manual_models': [],
+                    'fetched_models': [],
+                    'hidden_models': [],
                     'enabled_models': _split_custom_models(cfg.get('custom_enabled_models', '')),
                     'context_limit': legacy_context_limit,
                     'supports_vision': cfg.get('custom_supports_vision', 'false').lower() == 'true',
@@ -684,6 +732,9 @@ class HeaderMixin:
                 self._custom_provider_config.update(primary)
                 self._custom_provider_config['profiles'] = normalized_profiles
                 self._custom_provider_config['models'] = _flatten_custom_models(normalized_profiles)
+                self._custom_provider_config['manual_models'] = primary.get('manual_models', [])
+                self._custom_provider_config['fetched_models'] = primary.get('fetched_models', [])
+                self._custom_provider_config['hidden_models'] = primary.get('hidden_models', [])
                 # 更新模型列表
                 self._model_map['custom'] = self._custom_provider_config['models']
                 # 同步到 AIClient（如果已初始化）
@@ -898,6 +949,8 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._models_list.setMinimumHeight(120)
         self._models_list.setToolTip("勾选后仅在主界面显示勾选模型；全不勾选则显示全部模型")
         self._models_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._models_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._models_list.customContextMenuRequested.connect(self._show_model_list_menu)
         self._models_list.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )
@@ -922,6 +975,24 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._btn_fetch_models.clicked.connect(self._fetch_models)
         models_row.addWidget(self._btn_fetch_models)
         models_row.setAlignment(self._btn_fetch_models, QtCore.Qt.AlignTop)
+
+        self._btn_add_model = QtWidgets.QPushButton()
+        self._btn_add_model.setFixedSize(28, 28)
+        self._btn_add_model.setIcon(_make_line_icon("add"))
+        self._btn_add_model.setIconSize(QtCore.QSize(18, 18))
+        self._btn_add_model.setToolTip(tr("custom.add_model"))
+        self._btn_add_model.clicked.connect(self._add_model_manually)
+        models_row.addWidget(self._btn_add_model)
+        models_row.setAlignment(self._btn_add_model, QtCore.Qt.AlignTop)
+
+        self._btn_remove_model = QtWidgets.QPushButton()
+        self._btn_remove_model.setFixedSize(28, 28)
+        self._btn_remove_model.setIcon(_make_line_icon("delete"))
+        self._btn_remove_model.setIconSize(QtCore.QSize(18, 18))
+        self._btn_remove_model.setToolTip(tr("custom.remove_model"))
+        self._btn_remove_model.clicked.connect(self._remove_selected_model)
+        models_row.addWidget(self._btn_remove_model)
+        models_row.setAlignment(self._btn_remove_model, QtCore.Qt.AlignTop)
 
         form.addRow(tr("custom.models"), models_row_widget)
 
@@ -1039,11 +1110,15 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             'api_key': self._key_edit.text().strip(),
             'protocol': self._protocol_combo.currentData() or 'openai',
             'models': self._model_names(),
+            'manual_models': self._manual_model_names(),
+            'fetched_models': self._fetched_model_names(),
+            'hidden_models': self._hidden_model_names(),
             'enabled_models': self._enabled_model_names(),
             'context_limit': self._ctx_spin.value(),
             'supports_vision': self._chk_vision.isChecked(),
             'supports_fc': self._chk_fc.isChecked(),
         }
+        self._profiles[idx].update(_normalize_custom_model_state(self._profiles[idx]))
         self._set_profile_combo_item_text(idx, name)
         self._set_profile_name_text(name)
 
@@ -1110,7 +1185,10 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             self._key_edit.setText(profile.get('api_key', ''))
             protocol_index = self._protocol_combo.findData(profile.get('protocol', 'openai'))
             self._protocol_combo.setCurrentIndex(max(0, protocol_index))
-            self._set_model_names(profile.get('models', []), profile.get('enabled_models', []))
+            state = _normalize_custom_model_state(profile)
+            profile.update(state)
+            self._profiles[index] = profile
+            self._set_model_names(state['models'], state['enabled_models'])
             self._ctx_spin.setValue(profile.get('context_limit', 128000))
             self._chk_vision.setChecked(profile.get('supports_vision', False))
             self._chk_fc.setChecked(profile.get('supports_fc', True))
@@ -1196,6 +1274,18 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 seen.add(name)
         return names
 
+    def _manual_model_names(self) -> list:
+        profile = self._profiles[self._profile_index] if self._profiles else {}
+        return list(profile.get('manual_models') or [])
+
+    def _fetched_model_names(self) -> list:
+        profile = self._profiles[self._profile_index] if self._profiles else {}
+        return list(profile.get('fetched_models') or [])
+
+    def _hidden_model_names(self) -> list:
+        profile = self._profiles[self._profile_index] if self._profiles else {}
+        return list(profile.get('hidden_models') or [])
+
     def _enabled_model_names(self) -> list:
         """Return checked model names. Empty means all models are visible."""
         names = []
@@ -1209,22 +1299,122 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         enabled = self._enabled_model_names()
         return enabled or self._model_names()
 
+    def _set_model_state(self, models: list = None, enabled_models: list = None,
+                         manual_models: list = None, fetched_models: list = None,
+                         hidden_models: list = None):
+        if not self._profiles:
+            return
+        idx = max(0, min(self._profile_index, len(self._profiles) - 1))
+        profile = self._profiles[idx]
+        if models is not None:
+            profile['models'] = _normalize_custom_model_list(models)
+        if enabled_models is not None:
+            profile['enabled_models'] = [name for name in _normalize_custom_model_list(enabled_models) if name in profile.get('models', [])]
+        if manual_models is not None:
+            profile['manual_models'] = _normalize_custom_model_list(manual_models)
+        if fetched_models is not None:
+            profile['fetched_models'] = _normalize_custom_model_list(fetched_models)
+        if hidden_models is not None:
+            profile['hidden_models'] = _normalize_custom_model_list(hidden_models)
+        state = _normalize_custom_model_state(profile)
+        profile.update(state)
+        self._profiles[idx] = profile
+        return profile
+
+    def _merge_model_state(self, models: list = None, manual_models: list = None,
+                           fetched_models: list = None, hidden_models: list = None):
+        profile = self._profiles[self._profile_index] if self._profiles else {}
+        current = _normalize_custom_model_state(profile)
+        base_models = _normalize_custom_model_list(models if models is not None else current['models'])
+        manual = _normalize_custom_model_list(manual_models if manual_models is not None else current['manual_models'])
+        fetched = _normalize_custom_model_list(fetched_models if fetched_models is not None else current['fetched_models'])
+        hidden = _normalize_custom_model_list(hidden_models if hidden_models is not None else current['hidden_models'])
+        hidden_set = set(hidden)
+        merged = []
+        seen = set()
+        for name in manual + fetched + base_models:
+            if name and name not in hidden_set and name not in seen:
+                merged.append(name)
+                seen.add(name)
+        enabled = [name for name in current['enabled_models'] if name in merged]
+        return self._set_model_state(
+            models=merged,
+            enabled_models=enabled,
+            manual_models=manual,
+            fetched_models=fetched,
+            hidden_models=hidden,
+        )
+
     def _set_model_names(self, models: list, enabled_models: list = None):
         """Replace the model list and restore checked visible-model selections."""
-        unique = []
-        seen = set()
-        for model in models:
-            name = str(model).strip()
-            if name and name not in seen:
-                unique.append(name)
-                seen.add(name)
-        enabled_set = set(enabled_models or [])
+        unique = _normalize_custom_model_list(models)
+        enabled_set = set(_normalize_custom_model_list(enabled_models or []))
         self._models_list.clear()
         for name in unique:
             item = QtWidgets.QListWidgetItem(name)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked if name in enabled_set else QtCore.Qt.Unchecked)
             self._models_list.addItem(item)
+
+    def _rebuild_model_list(self):
+        if not self._profiles:
+            self._models_list.clear()
+            return
+        profile = self._profiles[self._profile_index]
+        state = _normalize_custom_model_state(profile)
+        self._set_model_names(state['models'], state['enabled_models'])
+
+    def _prompt_model_name(self, title: str, label: str, default: str = ''):
+        text, ok = QtWidgets.QInputDialog.getText(self, title, label, text=default)
+        if not ok:
+            return ''
+        return str(text or '').strip()
+
+    def _add_model_manually(self):
+        name = self._prompt_model_name(
+            tr('custom.add_model'),
+            tr('custom.add_model'),
+            self._model_names()[0] if self._model_names() else '',
+        )
+        if not name:
+            return
+        profile = self._set_model_state(
+            manual_models=self._manual_model_names() + [name],
+            hidden_models=[m for m in self._hidden_model_names() if m != name],
+        )
+        if profile:
+            self._rebuild_model_list()
+            self._save_current_profile()
+
+    def _remove_selected_model(self):
+        item = self._models_list.currentItem()
+        if item is None:
+            return
+        name = item.text().strip()
+        if not name:
+            return
+        profile = self._profiles[self._profile_index] if self._profiles else {}
+        current = _normalize_custom_model_state(profile)
+        manual = [m for m in current['manual_models'] if m != name]
+        fetched = [m for m in current['fetched_models'] if m != name]
+        hidden = current['hidden_models'] + [name]
+        self._set_model_state(manual_models=manual, fetched_models=fetched, hidden_models=hidden)
+        self._rebuild_model_list()
+        self._save_current_profile()
+
+    def _show_model_list_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        add_action = menu.addAction(tr('custom.add_model'))
+        remove_action = menu.addAction(tr('custom.remove_model'))
+        menu.addSeparator()
+        refresh_action = menu.addAction(tr('custom.fetch_models'))
+        action = menu.exec_(self._models_list.mapToGlobal(pos))
+        if action == add_action:
+            self._add_model_manually()
+        elif action == remove_action:
+            self._remove_selected_model()
+        elif action == refresh_action:
+            self._fetch_models()
 
     def _fetch_models(self):
         """从 API 获取可用模型列表并填充到模型列表"""
@@ -1262,7 +1452,12 @@ class _CustomProviderDialog(QtWidgets.QDialog):
                 data = resp.json()
                 model_ids = [m.get('id', '') for m in data.get('data', []) if m.get('id')]
                 if model_ids:
-                    self._set_model_names(sorted(model_ids), self._enabled_model_names())
+                    self._merge_model_state(
+                        models=sorted(model_ids),
+                        fetched_models=sorted(model_ids),
+                        hidden_models=self._hidden_model_names(),
+                    )
+                    self._rebuild_model_list()
                     self._test_status.setText(tr("custom.models_found", len(model_ids)))
                     self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
                 else:
@@ -1323,6 +1518,11 @@ class _CustomProviderDialog(QtWidgets.QDialog):
             if resp.status_code == 200:
                 data = resp.json()
                 recv_model = data.get('model', model)
+                self._merge_model_state(
+                    manual_models=self._manual_model_names() + [recv_model],
+                    hidden_models=[m for m in self._hidden_model_names() if m != recv_model],
+                )
+                self._rebuild_model_list()
                 self._test_status.setText(tr("custom.connect_ok", recv_model))
                 self._test_status.setStyleSheet(f"color: #4caf50; font-size: {ThemeEngine.scaled_px(12)}px;")
             else:
@@ -1340,7 +1540,7 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._save_current_profile()
         profiles = _dedupe_custom_profile_names([
             p for p in _normalize_custom_profiles(self._profiles)
-            if p.get('api_url') or p.get('models')
+            if p.get('api_url') or p.get('models') or p.get('manual_models') or p.get('fetched_models')
         ])
         self._profiles = profiles
         self._refresh_profile_combo_items()
@@ -1357,8 +1557,9 @@ class _CustomProviderDialog(QtWidgets.QDialog):
         self._save_current_profile()
         profiles = _dedupe_custom_profile_names([
             p for p in _normalize_custom_profiles(self._profiles)
-            if p.get('api_url') or p.get('models')
+            if p.get('api_url') or p.get('models') or p.get('manual_models') or p.get('fetched_models')
         ])
+        profiles = _dedupe_custom_profile_names([dict(p, **_normalize_custom_model_state(p)) for p in profiles])
         self._profiles = profiles
         self._refresh_profile_combo_items()
         primary = profiles[0] if profiles else {}
