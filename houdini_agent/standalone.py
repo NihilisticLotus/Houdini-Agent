@@ -12,8 +12,13 @@ def _apply_standalone_dark_palette(QtWidgets, QtGui):
     app = QtWidgets.QApplication.instance()
     if app is None:
         return
+    system_font = QtGui.QFont(app.font())
     try:
         app.setStyle("Fusion")
+    except Exception:
+        pass
+    try:
+        app.setFont(system_font)
     except Exception:
         pass
     palette = QtGui.QPalette()
@@ -47,10 +52,16 @@ def main(argv=None) -> int:
         return 2
 
     from houdini_agent.core.main_window import MainWindow
+    from houdini_agent.ui.theme_engine import ThemeEngine
     from houdini_agent.utils.bridge import RemoteHoudiniMCPClient
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     _apply_standalone_dark_palette(QtWidgets, QtGui)
+    ThemeEngine.install_application_scaling(
+        app,
+        owned_only=False,
+        scale_application_font=True,
+    )
     client = RemoteHoudiniMCPClient(args.bridge_url)
     window = MainWindow(parent=None, embedded=False, mcp_client=client, bridge_url=args.bridge_url)
     window.show()

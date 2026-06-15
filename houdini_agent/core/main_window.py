@@ -36,6 +36,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         
         super().__init__(parent)
+        self.setProperty("houdiniAgentTextScaleRoot", True)
         self.setWindowTitle("Houdini Agent")
         self.setMinimumSize(420, 600)
         

@@ -36,6 +36,7 @@ def _reload_modules():
         'houdini_agent.utils.mcp.client',
         'houdini_agent.utils.mcp',
         'houdini_agent.ui.i18n',
+        'houdini_agent.ui.theme_engine',
         'houdini_agent.ui.cursor_widgets',
         # ★ 新增：拆分出的 mixin 模块也需要重载，否则引用旧类导致异常
         'houdini_agent.ui.font_settings_dialog',
@@ -318,6 +319,11 @@ def show_embedded_tool():
         app = QtWidgets.QApplication([])
     else:
         app = QtWidgets.QApplication.instance()
+    try:
+        from houdini_agent.ui.theme_engine import ThemeEngine
+        ThemeEngine.install_application_scaling(app)
+    except Exception as e:
+        print(f"[Houdini Agent] Startup: text scaling setup failed: {e}")
     print("[Houdini Agent] Startup: QApplication ready")
 
     try:
