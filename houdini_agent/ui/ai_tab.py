@@ -1073,6 +1073,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         self.btn_font_scale.clicked.connect(self._on_font_settings)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.model_combo.currentIndexChanged.connect(self._update_context_stats)
+        self.model_combo.currentIndexChanged.connect(lambda _index: self._update_key_status())
         
         # 字号缩放快捷键
         # QShortcut 在 PySide6 中位于 QtGui，PySide2 中位于 QtWidgets
@@ -1220,6 +1221,11 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
     def _get_current_context_limit(self) -> int:
         """获取当前模型的上下文限制"""
         model = self.model_combo.currentText()
+        if self._current_provider() == 'custom':
+            route_info = self.client.get_route_info('custom', model)
+            context_limit = route_info.get('context_limit')
+            if context_limit:
+                return int(context_limit)
         return self._model_context_limits.get(model, 64000)
     
     def _update_context_stats(self):
@@ -1373,10 +1379,13 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             return
 
         # 使用预设的模型列表
+        self.model_combo.setEnabled(True)
         self.model_combo.addItems(self._model_map.get(provider, []))
 
     def _on_ollama_models_ready(self, models: list):
         """Ollama 模型列表后台加载完成回调（主线程）"""
+        if self._current_provider() != 'ollama':
+            return
         self.model_combo.setEnabled(True)
         self.model_combo.clear()
         if models:
@@ -1387,6 +1396,21 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
 
     def _update_key_status(self):
         provider = self._current_provider()
+        model = self.model_combo.currentText()
+        route_info = self.client.get_route_info(provider, model)
+        route_lines = []
+        if route_info.get('profile'):
+            route_lines.append(f"配置: {route_info['profile']}")
+        if route_info.get('model'):
+            route_lines.append(f"请求模型: {route_info['model']}")
+        if route_info.get('protocol'):
+            protocol = 'Anthropic Messages' if route_info['protocol'] == 'anthropic' else 'OpenAI Compatible'
+            route_lines.append(f"协议: {protocol}")
+        if route_info.get('api_url'):
+            route_lines.append(f"请求地址: {route_info['api_url']}")
+        if route_info.get('context_limit'):
+            route_lines.append(f"上下文窗口: {int(route_info['context_limit']):,} tokens")
+        self.key_status.setToolTip('\n'.join(route_lines))
         
         if provider == 'ollama':
             # 测试 Ollama 连接
@@ -1398,7 +1422,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 self.key_status.setText("Offline")
                 self.key_status.setProperty("state", "error")
         elif self.client.has_api_key(provider):
-            masked = self.client.get_masked_key(provider)
+            masked = self.client.get_masked_key(provider, model)
             self.key_status.setText(masked)
             self.key_status.setProperty("state", "ok")
         else:

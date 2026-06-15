@@ -2492,14 +2492,14 @@ class AIClient:
             return ok
         return True
 
-    def get_masked_key(self, provider: str = 'openai') -> str:
+    def get_masked_key(self, provider: str = 'openai', model: str = '') -> str:
         provider = (provider or 'openai').lower()
         # Ollama 显示本地状态
         if provider == 'ollama':
             return 'Local'
         # Custom: 显示 URL 缩略
         if provider == 'custom':
-            profile = self._get_custom_profile()
+            profile = self._get_custom_profile(model)
             url = profile.get('api_url') or self._CUSTOM_API_URL
             if url:
                 # 提取域名部分作为显示
@@ -2507,8 +2507,7 @@ class AIClient:
                     from urllib.parse import urlparse
                     parsed = urlparse(url)
                     host = parsed.hostname or url[:20]
-                    suffix = f" +{len(self._CUSTOM_PROFILES) - 1}" if len(self._CUSTOM_PROFILES) > 1 else ""
-                    return host[:16] + ('...' if len(host) > 16 else '') + suffix
+                    return host[:16] + ('...' if len(host) > 16 else '')
                 except Exception:
                     return url[:16] + '...'
             return 'Not Set'
@@ -2518,6 +2517,26 @@ class AIClient:
         if len(key) <= 10:
             return '*' * len(key)
         return key[:5] + '...' + key[-4:]
+
+    def get_route_info(self, provider: str = 'openai', model: str = '') -> Dict[str, Any]:
+        """Return the effective endpoint and request model used for a selection."""
+        provider = (provider or 'openai').lower()
+        info = {
+            'provider': provider,
+            'profile': '',
+            'api_url': self._get_api_url(provider, model),
+            'protocol': 'anthropic' if self._is_anthropic_protocol(provider, model) else 'openai',
+            'model': self._get_custom_model_name(model) if provider == 'custom' else model,
+            'context_limit': None,
+        }
+        if provider == 'custom':
+            profile = self._get_custom_profile(model)
+            info['profile'] = str(profile.get('name') or 'Custom')
+            try:
+                info['context_limit'] = int(profile.get('context_limit') or 128000)
+            except (TypeError, ValueError):
+                info['context_limit'] = 128000
+        return info
 
     def _is_anthropic_protocol(self, provider: str, model: str) -> bool:
         """判断是否应使用 Anthropic Messages 协议（而非 OpenAI 协议）"""

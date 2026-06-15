@@ -815,6 +815,7 @@ class HeaderMixin:
                 if current_model in new_cfg['models']:
                     self.model_combo.setCurrentText(current_model)
                 self._update_key_status()
+                self._update_context_stats()
 
 
 class _CustomProviderDialog(QtWidgets.QDialog):
