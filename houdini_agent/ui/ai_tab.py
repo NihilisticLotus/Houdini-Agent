@@ -1662,33 +1662,41 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         return (
             '[viewport snapshot attached' in text
             or '[auto visual checkpoint attached' in text
+            or '[Viewport snapshot]' in text
+            or '[Auto viewport verification]' in text
         )
 
     @staticmethod
-    def _visible_viewport_message(msg: dict) -> dict:
-        """Convert an internal viewport-analysis prompt into a visible chat snapshot."""
-        if msg.get('role') != 'user':
-            return msg
+    def _viewport_snapshot_payloads(msg: dict) -> list:
+        """Extract internal viewport images for rendering inside execution details."""
         content = msg.get('content')
         if not isinstance(content, list):
-            return msg
+            return []
 
         text = '\n'.join(
             part.get('text', '') for part in content
             if isinstance(part, dict) and part.get('type') == 'text'
         )
         if '[auto visual checkpoint attached' in text:
-            label = '[Auto viewport verification]'
+            label = 'Auto viewport verification'
         elif '[viewport snapshot attached' in text:
-            label = '[Viewport snapshot]'
+            label = 'Viewport snapshot'
+        elif '[Auto viewport verification]' in text:
+            label = 'Auto viewport verification'
+        elif '[Viewport snapshot]' in text:
+            label = 'Viewport snapshot'
         else:
-            return msg
+            return []
 
-        visible_parts = [{"type": "text", "text": label}]
+        payloads = []
         for part in content:
-            if isinstance(part, dict) and part.get('type') == 'image_url':
-                visible_parts.append(part)
-        return {'role': 'user', 'content': visible_parts}
+            if not isinstance(part, dict) or part.get('type') != 'image_url':
+                continue
+            url = part.get('image_url', {}).get('url', '')
+            match = re.match(r'^data:([^;,]+);base64,(.+)$', url, re.DOTALL)
+            if match:
+                payloads.append((label, match.group(2), match.group(1)))
+        return payloads
 
     def _on_append_content(self, text: str):
         """处理内容追加（主线程槽函数）
@@ -2140,8 +2148,9 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         if new_messages:
             for nm in new_messages:
                 if self._is_internal_viewport_message(nm):
-                    clean = self._visible_viewport_message(nm)
-                    history.append(clean)
+                    # Keep model-only viewport prompts internal. History rendering
+                    # restores their images inside the collapsible execution block.
+                    history.append(nm.copy())
                     continue
                 clean = nm.copy()
                 clean.pop('reasoning_content', None)  # 推理模型专用，不需持久化
@@ -7371,7 +7380,11 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
             role = msg.get('role', '')
 
             if role == 'user':
-                groups.append((i, i + 1))
+                if self._is_internal_viewport_message(msg) and groups:
+                    start, _end = groups[-1]
+                    groups[-1] = (start, i + 1)
+                else:
+                    groups.append((i, i + 1))
                 i += 1
             elif role == 'assistant':
                 if msg.get('tool_calls'):
@@ -7381,6 +7394,8 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                         m = messages[j]
                         r = m.get('role', '')
                         if r == 'tool':
+                            j += 1
+                        elif r == 'user' and self._is_internal_viewport_message(m):
                             j += 1
                         elif r == 'assistant':
                             j += 1
@@ -7421,8 +7436,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         msg = messages[si]
         role = msg.get('role', '')
         if self._is_internal_viewport_message(msg):
-            msg = self._visible_viewport_message(msg)
-            role = msg.get('role', '')
+            return
         raw_content = msg.get('content', '') or ''
         if isinstance(raw_content, list):
             content = '\n'.join(
@@ -7460,6 +7474,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                         if getattr(response, 'thinking_section', None) is not None:
                             response.thinking_section.finalize()
                     self._render_old_tool_msgs(response, tool_msgs)
+                    self._restore_viewport_snapshots(response, messages[si:ei])
                     self._restore_shell_widgets(response, msg)
                     response.set_content(content)
                     response.status_label.setText("历史")
@@ -7648,6 +7663,7 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
                 response.add_tool_result(t_name, f"{prefix}{t_content}")
         
         # 恢复 Shell 折叠面板
+        self._restore_viewport_snapshots(response, turn_msgs)
         self._restore_shell_widgets(response, final_msg)
         
         # AI 回复内容
@@ -7664,6 +7680,14 @@ SideFX Labs Node Usage Rules (MUST follow strictly):
         response.status_label.setText(label)
         response.finalize()
         response.status_label.setText(label)
+
+    def _restore_viewport_snapshots(self, response, messages: list):
+        """Restore internal viewport checks inside the collapsible execution trace."""
+        for message in messages:
+            if not self._is_internal_viewport_message(message):
+                continue
+            for label, b64_data, media_type in self._viewport_snapshot_payloads(message):
+                response.add_viewport_snapshot(label, b64_data, media_type)
 
     @staticmethod
     def _find_tool_name_by_id(messages: list, tool_call_id: str) -> str:
